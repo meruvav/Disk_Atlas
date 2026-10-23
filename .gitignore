@@ -32,13 +32,14 @@ env/
 # PyInstaller
 *.manifest
 *.spec
+!packaging/*.spec
 
 # Archives & Temporary Artifacts
 *.exe
 *.zip
 *.tar.gz
 *.html
-!web/*.html
+!src/web/*.html
 
 # OS Specific
 .DS_Store

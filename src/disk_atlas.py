@@ -26,6 +26,10 @@ else:
 
 if (BASE_DIR / "web").exists():
     WEB_DIR = BASE_DIR / "web"
+elif (BASE_DIR / "src" / "web").exists():
+    WEB_DIR = BASE_DIR / "src" / "web"
+elif (BASE_DIR.parent / "src" / "web").exists():
+    WEB_DIR = BASE_DIR.parent / "src" / "web"
 elif (BASE_DIR / "_internal" / "web").exists():
     WEB_DIR = BASE_DIR / "_internal" / "web"
 elif (Path(sys.executable).parent / "_internal" / "web").exists():

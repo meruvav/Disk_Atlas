@@ -20,10 +20,22 @@ from tkinter import ttk, filedialog, messagebox
 # Determine payload location
 if getattr(sys, 'frozen', False):
     BUNDLE_DIR = Path(sys._MEIPASS)
+    PAYLOAD_ZIP = BUNDLE_DIR / "DiskAtlas_Payload.zip"
 else:
     BUNDLE_DIR = Path(__file__).resolve().parent
-
-PAYLOAD_ZIP = BUNDLE_DIR / "DiskAtlas_Payload.zip"
+    PAYLOAD_ZIP = None
+    for candidate in [
+        BUNDLE_DIR / "DiskAtlas_Payload.zip",
+        BUNDLE_DIR.parent / "dist" / "DiskAtlas_Payload.zip",
+        BUNDLE_DIR.parent / "DiskAtlas_Payload.zip",
+        Path.cwd() / "dist" / "DiskAtlas_Payload.zip",
+        Path.cwd() / "DiskAtlas_Payload.zip",
+    ]:
+        if candidate.exists():
+            PAYLOAD_ZIP = candidate
+            break
+    if not PAYLOAD_ZIP:
+        PAYLOAD_ZIP = BUNDLE_DIR / "DiskAtlas_Payload.zip"
 
 def is_admin():
     if sys.platform != 'win32':

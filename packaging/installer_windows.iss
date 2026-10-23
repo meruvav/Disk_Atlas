@@ -3,8 +3,8 @@ AppName=Disk Atlas
 AppVersion=2.0
 DefaultDirName={autopf}\DiskAtlas
 DefaultGroupName=Disk Atlas
-OutputDir=dist_installer
-OutputBaseFilename=DiskAtlas_Windows_Setup
+OutputDir=..\dist
+OutputBaseFilename=DiskAtlas_Inno_Setup
 Compression=lzma
 SolidCompression=yes
 DisableDirPage=no
@@ -15,7 +15,7 @@ UninstallDisplayName=Disk Atlas
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-Source: "dist\DiskAtlas\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\dist\DiskAtlas\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\Disk Atlas"; Filename: "{app}\DiskAtlas.exe"
