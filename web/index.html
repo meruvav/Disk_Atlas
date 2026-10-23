@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Disk Atlas — Visualize • Explore • Understand • Export</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- TOP APP HEADER -->
+  <header class="top-header">
+    <div class="brand-section">
+      <div class="brand-icon">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
+          <polyline points="2 17 12 22 22 17"></polyline>
+          <polyline points="2 12 12 17 22 12"></polyline>
+        </svg>
+      </div>
+      <div class="brand-text">
+        <h1>Disk Atlas</h1>
+        <p>Visualize your storage. Explore. Understand. Export.</p>
+      </div>
+    </div>
+
+    <!-- SCAN TOOLBAR -->
+    <div class="scan-toolbar">
+      <div class="scope-pill">
+        <button class="scope-btn active" data-scope="folder">Folder</button>
+        <button class="scope-btn" data-scope="drive">Drive</button>
+        <button class="scope-btn" data-scope="all">All drives</button>
+      </div>
+
+      <div class="path-input-group">
+        <select id="drive-select" class="drive-select" title="Quick drive selector">
+          <option value="D:\Archive">D:\</option>
+          <option value="C:\">C:\</option>
+        </select>
+        <input type="text" id="path-input" class="path-input" value="D:\Archive" placeholder="Enter folder or drive path...">
+        <button class="icon-btn" id="browse-btn" title="Browse for folder">📁</button>
+      </div>
+
+      <button class="btn-primary" id="scan-btn">
+        <span>🔍</span>
+        <span>Scan</span>
+      </button>
+
+      <button class="btn-secondary" id="export-btn" title="Export interactive offline report">
+        <span>📄</span>
+        <span>Export HTML</span>
+      </button>
+    </div>
+
+    <!-- HEADER ACTIONS (THEME TOGGLE) -->
+    <div class="header-actions">
+      <button class="btn-secondary" id="theme-toggle-btn" style="padding: 0 10px;">
+        🌙 Dark
+      </button>
+    </div>
+  </header>
+
+  <!-- STATS RIBBON -->
+  <div class="stats-ribbon">
+    <div class="stats-left">
+      <div class="stat-chip">
+        <span>📁</span>
+        <strong id="ribbon-path">D:\Archive</strong>
+      </div>
+      <div class="stat-chip">
+        <span>Total:</span>
+        <strong id="stat-total-size">240 GB</strong>
+      </div>
+      <div class="stat-chip">
+        <span id="stat-file-count">18,420 files</span>
+      </div>
+      <div class="stat-chip">
+        <span id="stat-folder-count">842 folders</span>
+      </div>
+      <div class="stat-chip">
+        <span id="stat-scan-time" style="color:var(--text-dim);">Scanned: Today</span>
+      </div>
+    </div>
+
+    <div class="legend-group">
+      <div class="legend-item">
+        <span class="legend-dot dot-small"></span>
+        <span>Small &lt; 100 MB</span>
+      </div>
+      <div class="legend-item">
+        <span class="legend-dot dot-medium"></span>
+        <span>Medium 100 MB – 1 GB</span>
+      </div>
+      <div class="legend-item">
+        <span class="legend-dot dot-large"></span>
+        <span>Large &gt; 1 GB</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- MAIN WORKSPACE -->
+  <main class="main-workspace">
+
+    <!-- VIEWPORT AREA (3D / LIST) -->
+    <div class="viewport-area">
+
+      <!-- VIEWPORT HEADER OVERLAY -->
+      <div class="viewport-header">
+        <div class="mode-info">
+          <div class="mode-title" id="current-mode-title">A / Storage City</div>
+          <div class="mode-subtitle" id="current-mode-subtitle">Folders are districts. Files are buildings. Size is shown by both area and height.</div>
+        </div>
+
+        <div class="viewport-controls">
+          <!-- SUB-CONTROLS FOR LAYERS VIEW -->
+          <div class="sub-controls" id="sub-controls-layers" style="display: none;">
+            <button class="pill-btn" id="btn-explode">
+              <span>↑</span> Explode layers
+            </button>
+            <button class="pill-btn" id="btn-collapse">
+              <span>↓</span> Collapse
+            </button>
+          </div>
+
+          <!-- VIEW MODE TABS -->
+          <div class="view-mode-tabs">
+            <button class="view-tab-btn active" data-mode="city">
+              <span>🏙️</span> City
+            </button>
+            <button class="view-tab-btn" data-mode="layers">
+              <span>🥪</span> Layers
+            </button>
+            <button class="view-tab-btn" data-mode="terrain">
+              <span>🏔️</span> Terrain
+            </button>
+            <button class="view-tab-btn" data-mode="list">
+              <span>📋</span> List
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 3D THREE.JS CONTAINER -->
+      <div id="canvas-container"></div>
+
+      <!-- TABULAR LIST VIEW CONTAINER -->
+      <div id="list-view-container"></div>
+
+      <!-- CAMERA HUD CONTROLS (BOTTOM LEFT) -->
+      <div class="camera-hud">
+        <button class="hud-btn" id="hud-iso" title="Isometric view">Iso</button>
+        <button class="hud-btn" id="hud-top" title="Top view">Top</button>
+        <button class="hud-btn" id="hud-front" title="Front view">Front</button>
+        <button class="hud-btn" id="hud-reset" title="Reset camera">↺ Reset view</button>
+      </div>
+
+      <!-- TERRAIN DEPTH SLIDER HUD (BOTTOM CENTER) -->
+      <div class="depth-hud" id="depth-hud" style="display: none;">
+        <span>Hierarchy depth:</span>
+        <div class="depth-selector">
+          <div class="depth-num" data-depth="1">1</div>
+          <div class="depth-num" data-depth="2">2</div>
+          <div class="depth-num active" data-depth="3">3</div>
+          <div class="depth-num" data-depth="4">4</div>
+          <div class="depth-num" data-depth="5">5</div>
+        </div>
+        <span style="font-size:0.7rem; color:var(--text-dim); margin-left:6px;">(deeper levels reveal individual files)</span>
+      </div>
+
+      <!-- FLOATING TOOLTIP -->
+      <div id="floating-tooltip"></div>
+    </div>
+
+    <!-- RIGHT INSPECTOR SIDEBAR -->
+    <aside class="inspector-sidebar">
+      
+      <!-- BREADCRUMBS BAR -->
+      <div class="breadcrumb-bar" id="breadcrumb-bar">
+        <span class="breadcrumb-item active">📁 Root</span>
+      </div>
+
+      <!-- SELECTED ITEM HEADER CARD -->
+      <div class="item-summary-card">
+        <div class="summary-header">
+          <div class="summary-title">
+            <span id="summary-icon">📁</span>
+            <span id="summary-name">Archive</span>
+          </div>
+          <div class="summary-size" id="summary-size">240 GB</div>
+        </div>
+
+        <div class="summary-meta-row">
+          <span id="summary-percent" style="font-weight:600; color:var(--accent-cyan);">100% of total</span>
+          <span id="summary-items-count">18,420 files, 842 folders</span>
+        </div>
+
+        <div class="size-progress-bg">
+          <div class="size-progress-fill" id="size-bar-fill" style="width: 100%;"></div>
+        </div>
+      </div>
+
+      <!-- INSPECTOR TABS -->
+      <div class="inspector-tabs">
+        <button class="tab-btn active" data-tab="contents">Contents</button>
+        <button class="tab-btn" data-tab="hierarchy">Hierarchy</button>
+        <button class="tab-btn" data-tab="largest">Largest files</button>
+        <button class="tab-btn" data-tab="insights">Insights</button>
+      </div>
+
+      <!-- TAB CONTENT AREAS -->
+      <div class="tab-content-area">
+        <div class="tab-pane" id="tab-contents" style="display: block;"></div>
+        <div class="tab-pane" id="tab-hierarchy" style="display: none;"></div>
+        <div class="tab-pane" id="tab-largest" style="display: none;"></div>
+        <div class="tab-pane" id="tab-insights" style="display: none;"></div>
+      </div>
+
+      <!-- DETAILS FOOTER -->
+      <div class="details-footer">
+        <div class="detail-row">
+          <span>Type:</span>
+          <span id="detail-type">File folder</span>
+        </div>
+        <div class="detail-row">
+          <span>Path:</span>
+          <span id="detail-path" style="max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">D:\Archive</span>
+        </div>
+        <div class="detail-row">
+          <span>Size:</span>
+          <span id="detail-bytes">240 GB (257,698,037,760 bytes)</span>
+        </div>
+        <div class="detail-row">
+          <span>Contains:</span>
+          <span id="detail-contains">18,420 files, 842 folders</span>
+        </div>
+        <div style="margin-top: 6px;">
+          <button class="btn-secondary" id="btn-open-explorer" style="width:100%; justify-content:center; height:30px; font-size:0.75rem;">
+            📂 Open in File Explorer
+          </button>
+        </div>
+      </div>
+
+    </aside>
+
+  </main>
+
+  <!-- SCANNING PROGRESS MODAL -->
+  <div id="scanning-modal">
+    <div class="modal-card">
+      <div class="scan-pulse-ring"></div>
+      <div class="scan-status-text">Scanning directory...</div>
+      <div class="scan-path-text" id="modal-scan-path">Preparing scan...</div>
+      <button class="btn-secondary btn-danger" id="modal-cancel-btn" style="margin: 0 auto;">
+        Cancel Scan
+      </button>
+    </div>
+  </div>
+
+  <!-- SCRIPTS -->
+  <script src="three.min.js"></script>
+  <script src="OrbitControls.js"></script>
+  <script src="visualizer.js"></script>
+  <script src="app.js"></script>
+
+</body>
+</html>

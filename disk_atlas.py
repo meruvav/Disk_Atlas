@@ -1,0 +1,482 @@
+#!/usr/bin/env python3
+"""
+Disk Atlas — Desktop Engine & Scanner
+Merges 3D Storage City, Folder Layers, and Storage Terrain visualizations into a unified application.
+"""
+
+import os
+import sys
+import json
+import time
+import shutil
+import ctypes
+import threading
+import subprocess
+import webbrowser
+import urllib.parse
+from pathlib import Path
+from http.server import HTTPServer, SimpleHTTPRequestHandler
+import socketserver
+
+# Determine base directory (handles PyInstaller bundled mode)
+if getattr(sys, 'frozen', False):
+    BASE_DIR = Path(sys._MEIPASS)
+else:
+    BASE_DIR = Path(__file__).resolve().parent
+
+if (BASE_DIR / "web").exists():
+    WEB_DIR = BASE_DIR / "web"
+elif (BASE_DIR / "_internal" / "web").exists():
+    WEB_DIR = BASE_DIR / "_internal" / "web"
+elif (Path(sys.executable).parent / "_internal" / "web").exists():
+    WEB_DIR = Path(sys.executable).parent / "_internal" / "web"
+else:
+    WEB_DIR = BASE_DIR / "web"
+
+# --- DRIVE DETECTION UTILITIES ---
+def list_system_drives():
+    drives = []
+    if sys.platform == 'win32':
+        if hasattr(os, 'listdrives'):
+            drive_letters = os.listdrives()
+        else:
+            bitmask = ctypes.windll.kernel32.GetLogicalDrives()
+            drive_letters = [f"{chr(65 + i)}:\\" for i in range(26) if bitmask & (1 << i)]
+
+        for d in drive_letters:
+            try:
+                usage = shutil.disk_usage(d)
+                drives.append({
+                    "path": d,
+                    "total": usage.total,
+                    "free": usage.free,
+                    "used": usage.used
+                })
+            except (PermissionError, OSError):
+                drives.append({"path": d, "total": 0, "free": 0, "used": 0})
+    else:
+        usage = shutil.disk_usage("/")
+        drives.append({"path": "/", "total": usage.total, "free": usage.free, "used": usage.used})
+    return drives
+
+# --- HIGH-PERFORMANCE ITERATIVE SCANNER ---
+class DiskScanner:
+    def __init__(self):
+        self.state = "idle" # "idle", "scanning", "done", "error"
+        self.cancel_event = threading.Event()
+        self.current_path = ""
+        self.scanned_files = 0
+        self.scanned_folders = 0
+        self.total_bytes = 0
+        self.last_result = None
+        self.error_message = ""
+        self._last_progress_time = 0
+
+    def cancel(self):
+        self.cancel_event.set()
+        self.state = "idle"
+
+    def quick_scan(self, target_path):
+        """Ultra-fast non-blocking scan of immediate folder contents (Level 1) in < 15ms."""
+        target_path = os.path.abspath(target_path)
+        if not os.path.isdir(target_path):
+            raise FileNotFoundError(f"Path is not a valid directory: {target_path}")
+
+        children = []
+        total_size = 0
+        file_count = 0
+        folder_count = 0
+
+        try:
+            with os.scandir(target_path) as it:
+                for entry in it:
+                    try:
+                        if entry.is_symlink():
+                            continue
+                        if entry.is_dir(follow_symlinks=False):
+                            folder_count += 1
+                            children.append({
+                                "name": entry.name,
+                                "path": entry.path,
+                                "type": "folder",
+                                "size": 0,
+                                "children": []
+                            })
+                        else:
+                            file_count += 1
+                            st = entry.stat(follow_symlinks=False)
+                            f_size = st.st_size
+                            total_size += f_size
+                            ext = os.path.splitext(entry.name)[1].lower() or "other"
+                            children.append({
+                                "name": entry.name,
+                                "path": entry.path,
+                                "type": "file",
+                                "size": f_size,
+                                "ext": ext
+                            })
+                    except (PermissionError, FileNotFoundError, OSError):
+                        continue
+        except (PermissionError, FileNotFoundError, OSError):
+            pass
+
+        # Sort folders first, then files by size descending
+        children.sort(key=lambda x: (0 if x["type"] == "folder" else 1, -x["size"]))
+
+        result = {
+            "name": os.path.basename(target_path) or target_path,
+            "path": target_path,
+            "type": "folder",
+            "size": total_size,
+            "children": children,
+            "quick_preview": True,
+            "file_count": file_count,
+            "folder_count": folder_count
+        }
+        self.last_result = result
+        return result
+
+    def scan_path(self, target_path):
+        self.state = "scanning"
+        self.cancel_event.clear()
+        self.scanned_files = 0
+        self.scanned_folders = 0
+        self.total_bytes = 0
+        self.current_path = target_path
+        self.error_message = ""
+
+        try:
+            tree = self._iterative_scan(target_path)
+            if self.cancel_event.is_set():
+                self.state = "idle"
+            else:
+                self.last_result = tree
+                self.state = "done"
+        except Exception as e:
+            self.error_message = str(e)
+            self.state = "error"
+
+    def _iterative_scan(self, root_path):
+        root_path = os.path.abspath(root_path)
+        if not os.path.exists(root_path):
+            raise FileNotFoundError(f"Path does not exist: {root_path}")
+
+        # Node map: path -> dict
+        nodes = {}
+        # Directories to explore: stack for depth-first
+        stack = [root_path]
+
+        root_node = {
+            "name": os.path.basename(root_path) or root_path,
+            "path": root_path,
+            "type": "folder",
+            "size": 0,
+            "children": []
+        }
+        nodes[root_path] = root_node
+
+        # Post-order list to aggregate folder sizes from bottom up
+        post_order_dirs = []
+        items_processed = 0
+
+        while stack:
+            if self.cancel_event.is_set():
+                return root_node
+
+            curr = stack.pop()
+            post_order_dirs.append(curr)
+
+            items_processed += 1
+            if items_processed & 127 == 0:
+                now = time.time()
+                if now - self._last_progress_time > 0.08:
+                    self._last_progress_time = now
+                    self.current_path = curr
+
+            try:
+                with os.scandir(curr) as it:
+                    for entry in it:
+                        items_processed += 1
+                        if items_processed & 255 == 0 and self.cancel_event.is_set():
+                            return root_node
+
+                        try:
+                            if entry.is_symlink():
+                                continue
+
+                            if entry.is_dir(follow_symlinks=False):
+                                self.scanned_folders += 1
+                                child_dir = {
+                                    "name": entry.name,
+                                    "path": entry.path,
+                                    "type": "folder",
+                                    "size": 0,
+                                    "children": []
+                                }
+                                nodes[entry.path] = child_dir
+                                nodes[curr]["children"].append(child_dir)
+                                stack.append(entry.path)
+                            else:
+                                self.scanned_files += 1
+                                st = entry.stat(follow_symlinks=False)
+                                f_size = st.st_size
+                                self.total_bytes += f_size
+                                ext = os.path.splitext(entry.name)[1].lower() or "other"
+                                file_node = {
+                                    "name": entry.name,
+                                    "path": entry.path,
+                                    "type": "file",
+                                    "size": f_size,
+                                    "ext": ext
+                                }
+                                nodes[curr]["children"].append(file_node)
+                        except (PermissionError, FileNotFoundError, OSError):
+                            continue
+            except (PermissionError, FileNotFoundError, OSError):
+                continue
+
+        # Aggregate folder sizes bottom-up
+        for dir_path in reversed(post_order_dirs):
+            d_node = nodes[dir_path]
+            d_size = 0
+            for c in d_node["children"]:
+                d_size += c["size"]
+            d_node["size"] = d_size
+            d_node["children"].sort(key=lambda x: (0 if x["type"] == "folder" else 1, -x["size"]))
+
+        return root_node
+
+scanner_instance = DiskScanner()
+
+# --- HTTP HANDLER & REST API ---
+class DiskAtlasRequestHandler(SimpleHTTPRequestHandler):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, directory=str(WEB_DIR), **kwargs)
+
+    def do_GET(self):
+        if self.path == "/api/drives":
+            drives = list_system_drives()
+            self._send_json(drives)
+        elif self.path == "/api/status":
+            self._send_json({
+                "state": scanner_instance.state,
+                "current_path": scanner_instance.current_path,
+                "scanned_files": scanner_instance.scanned_files,
+                "scanned_folders": scanner_instance.scanned_folders,
+                "total_bytes": scanner_instance.total_bytes,
+                "error": scanner_instance.error_message
+            })
+        elif self.path.startswith("/api/quick-scan"):
+            query = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(query)
+            target = params.get("path", [""])[0]
+            if target and os.path.exists(target):
+                try:
+                    result = scanner_instance.quick_scan(target)
+                    self._send_json(result)
+                except Exception as e:
+                    self._send_json({"error": str(e)}, status=500)
+            else:
+                self._send_json({"error": "Invalid or missing path parameter"}, status=400)
+        elif self.path == "/api/data":
+            if scanner_instance.last_result:
+                self._send_json(scanner_instance.last_result)
+            else:
+                self._send_json({"error": "No scan data available"}, status=404)
+        else:
+            super().do_GET()
+
+    def do_POST(self):
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length) if content_length > 0 else b"{}"
+        try:
+            payload = json.loads(body.decode("utf-8")) if body else {}
+        except Exception:
+            payload = {}
+
+        if self.path == "/api/quick-scan":
+            target = payload.get("path")
+            if target and os.path.exists(target):
+                try:
+                    result = scanner_instance.quick_scan(target)
+                    if payload.get("auto_deep", True):
+                        threading.Thread(target=scanner_instance.scan_path, args=(target,), daemon=True).start()
+                    self._send_json(result)
+                except Exception as e:
+                    self._send_json({"error": str(e)}, status=500)
+            else:
+                self._send_json({"error": "Invalid or missing path parameter"}, status=400)
+
+        elif self.path == "/api/scan":
+            target = payload.get("path")
+            if target:
+                threading.Thread(target=scanner_instance.scan_path, args=(target,), daemon=True).start()
+                self._send_json({"status": "started", "path": target})
+            else:
+                self._send_json({"error": "Missing path parameter"}, status=400)
+
+        elif self.path == "/api/cancel":
+            scanner_instance.cancel()
+            self._send_json({"status": "cancelled"})
+
+        elif self.path == "/api/browse":
+            browse_data = self._open_native_folder_picker()
+            self._send_json(browse_data)
+
+        elif self.path == "/api/open-folder":
+            p = payload.get("path")
+            if p and os.path.exists(p):
+                if sys.platform == 'win32':
+                    os.startfile(p)
+                elif sys.platform == 'darwin':
+                    subprocess.Popen(['open', p])
+                else:
+                    subprocess.Popen(['xdg-open', p])
+                self._send_json({"status": "opened"})
+            else:
+                self._send_json({"error": "Invalid path"}, status=400)
+
+        elif self.path == "/api/export":
+            export_path = self._export_standalone_html()
+            self._send_json({"status": "exported", "path": export_path})
+        else:
+            self._send_json({"error": "Not Found"}, status=404)
+
+    def _open_native_folder_picker(self):
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+            root = tk.Tk()
+            root.withdraw()
+            root.attributes('-topmost', True)
+            selected = filedialog.askdirectory(title="Disk Atlas — Select Folder to Scan")
+            root.destroy()
+            if selected and os.path.exists(selected):
+                try:
+                    preview = scanner_instance.quick_scan(selected)
+                    return {"path": selected, "preview": preview}
+                except Exception:
+                    return {"path": selected}
+            return {"path": selected or ""}
+        except Exception:
+            return {"path": ""}
+
+    def _export_standalone_html(self):
+        data = scanner_instance.last_result or {"name": "No Data", "size": 0, "children": []}
+        
+        # Read files to inline
+        index_html = (WEB_DIR / "index.html").read_text(encoding="utf-8")
+        style_css = (WEB_DIR / "style.css").read_text(encoding="utf-8")
+        three_js = (WEB_DIR / "three.min.js").read_text(encoding="utf-8")
+        orbit_js = (WEB_DIR / "OrbitControls.js").read_text(encoding="utf-8")
+        vis_js = (WEB_DIR / "visualizer.js").read_text(encoding="utf-8")
+        app_js = (WEB_DIR / "app.js").read_text(encoding="utf-8")
+
+        # Safely escape script closing tag in JSON data
+        safe_json_data = json.dumps(data).replace("</", "<\\/")
+
+        # Construct single self-contained HTML
+        bundle = index_html.replace(
+            '<link rel="stylesheet" href="style.css">',
+            f'<style>\n{style_css}\n</style>'
+        )
+        
+        scripts_bundle = f"""
+        <script>
+        {three_js}
+        </script>
+        <script>
+        {orbit_js}
+        </script>
+        <script>
+        window.EMBEDDED_DISK_DATA = {safe_json_data};
+        </script>
+        <script>
+        {vis_js}
+        </script>
+        <script>
+        {app_js}
+        </script>
+        """
+
+        bundle = bundle.replace('<script src="three.min.js"></script>', '')
+        bundle = bundle.replace('<script src="OrbitControls.js"></script>', '')
+        bundle = bundle.replace('<script src="visualizer.js"></script>', '')
+        bundle = bundle.replace('<script src="app.js"></script>', scripts_bundle)
+
+        candidates = []
+        if "path" in data and os.path.isdir(data["path"]):
+            candidates.append(Path(data["path"]))
+        candidates.append(BASE_DIR)
+        candidates.append(Path.home() / "Desktop")
+        candidates.append(Path.home())
+
+        export_file = None
+        for cand in candidates:
+            try:
+                cand.mkdir(parents=True, exist_ok=True)
+                test_file = cand / "DiskAtlas_Interactive_Report.html"
+                test_file.write_text(bundle, encoding="utf-8")
+                export_file = test_file
+                break
+            except (PermissionError, OSError):
+                continue
+
+        if not export_file:
+            raise PermissionError("Could not write export file to any candidate directory.")
+        return str(export_file)
+
+    def _send_json(self, data, status=200):
+        body = json.dumps(data).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format, *args):
+        # Quiet server logs
+        pass
+
+# --- SERVER RUNNER & APP LAUNCHER ---
+def run_disk_atlas(port=8765):
+    class ThreadedHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
+        daemon_threads = True
+
+    server = ThreadedHTTPServer(("127.0.0.1", port), DiskAtlasRequestHandler)
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+
+    url = f"http://127.0.0.1:{port}"
+    print(f"==================================================")
+    print(f" Disk Atlas is running at: {url}")
+    print(f" Close this terminal window to stop the engine.")
+    print(f"==================================================")
+
+    # Launch in Edge/Chrome dedicated app window mode (looks like native desktop application)
+    launched_app_mode = False
+    if sys.platform == 'win32':
+        edge_path = r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
+        if os.path.exists(edge_path):
+            try:
+                subprocess.Popen([edge_path, f"--app={url}"])
+                launched_app_mode = True
+            except Exception:
+                pass
+
+    if not launched_app_mode:
+        webbrowser.open(url)
+
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\nStopping Disk Atlas...")
+        server.shutdown()
+
+if __name__ == "__main__":
+    port = 8765
+    if len(sys.argv) > 1 and sys.argv[1].isdigit():
+        port = int(sys.argv[1])
+    run_disk_atlas(port)

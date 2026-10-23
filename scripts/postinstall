@@ -1,0 +1,6 @@
+#!/bin/bash
+USER_DESKTOP="/Users/$USER/Desktop"
+if [ -d "$USER_DESKTOP" ]; then
+    ln -sf "/Applications/DiskInsightPro.app" "$USER_DESKTOP/DiskInsight Pro"
+fi
+exit 0
