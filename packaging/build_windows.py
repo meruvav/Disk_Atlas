@@ -5,6 +5,7 @@ Builds the standalone application and the setup wizard executable:
     1. Builds dist/DiskAtlas/ via PyInstaller
     2. Packages dist/DiskAtlas/ into dist/DiskAtlas_Payload.zip
     3. Builds dist/DiskAtlas_Setup.exe (Single-file UAC-enabled installer wizard)
+    4. Copies executables to Executables_Draft/
 """
 
 import os
@@ -18,6 +19,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 DIST_DIR = ROOT_DIR / "dist"
 BUILD_DIR = ROOT_DIR / "build"
 PACKAGING_DIR = ROOT_DIR / "packaging"
+DRAFT_DIR = ROOT_DIR / "Executables_Draft"
 
 def run_command(cmd, desc):
     print(f"\n[+] {desc}...")
@@ -32,9 +34,19 @@ def main():
     print("        Disk Atlas — Windows Automated Build Pipeline")
     print("=" * 60)
 
-    # 1. Build main DiskAtlas application
+    DIST_DIR.mkdir(parents=True, exist_ok=True)
+    BUILD_DIR.mkdir(parents=True, exist_ok=True)
+    DRAFT_DIR.mkdir(parents=True, exist_ok=True)
+
+    # 1. Build main DiskAtlas application directory
     spec_app = PACKAGING_DIR / "DiskAtlas.spec"
-    run_command([sys.executable, "-m", "PyInstaller", "--noconfirm", str(spec_app)], "Building DiskAtlas Engine")
+    run_command([
+        sys.executable, "-m", "PyInstaller",
+        "--noconfirm",
+        "--distpath", str(DIST_DIR),
+        "--workpath", str(BUILD_DIR),
+        str(spec_app)
+    ], "Building DiskAtlas Engine")
 
     # 2. Package into payload zip
     app_dist = DIST_DIR / "DiskAtlas"
@@ -55,7 +67,13 @@ def main():
 
     # 3. Build setup wizard executable
     spec_setup = PACKAGING_DIR / "DiskAtlas_Setup.spec"
-    run_command([sys.executable, "-m", "PyInstaller", "--noconfirm", str(spec_setup)], "Building DiskAtlas_Setup.exe")
+    run_command([
+        sys.executable, "-m", "PyInstaller",
+        "--noconfirm",
+        "--distpath", str(DIST_DIR),
+        "--workpath", str(BUILD_DIR),
+        str(spec_setup)
+    ], "Building DiskAtlas_Setup.exe")
 
     installer_exe = DIST_DIR / "DiskAtlas_Setup.exe"
     print("\n" + "=" * 60)
@@ -63,6 +81,21 @@ def main():
     print(f"  Installer: {installer_exe}")
     if installer_exe.exists():
         print(f"  Size: {installer_exe.stat().st_size / (1024*1024):.2f} MB")
+
+    # 4. Copy to Executables_Draft
+    draft_installer = DRAFT_DIR / "DiskAtlas_Setup.exe"
+    print(f"\n[+] Copying setup executable to {draft_installer}...")
+    shutil.copy2(installer_exe, draft_installer)
+    print(f"    Saved: {draft_installer} ({draft_installer.stat().st_size / (1024*1024):.2f} MB)")
+
+    # Also copy a portable standalone zip to Executables_Draft
+    draft_portable = DRAFT_DIR / "DiskAtlas_Portable.zip"
+    print(f"[+] Copying portable package to {draft_portable}...")
+    shutil.copy2(payload_zip, draft_portable)
+    print(f"    Saved: {draft_portable} ({draft_portable.stat().st_size / (1024*1024):.2f} MB)")
+
+    print("=" * 60)
+    print(f"All executables ready in: {DRAFT_DIR}")
     print("=" * 60)
 
 if __name__ == "__main__":
