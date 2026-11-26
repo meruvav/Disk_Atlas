@@ -860,7 +860,12 @@ def create_server(port=0):
     server = ThreadedHTTPServer(("127.0.0.1", port), DiskAtlasRequestHandler)
     server.auth_token = secrets.token_urlsafe(32)
     actual_port = server.server_address[1]
-    log.info("Engine started on http://127.0.0.1:%d (pid %d)", actual_port, os.getpid())
+    try:
+        from version import __version__
+    except ImportError:
+        __version__ = "unknown"
+    log.info("Disk Atlas v%s engine started on http://127.0.0.1:%d (pid %d)",
+             __version__, actual_port, os.getpid())
     return server, actual_port
 
 
