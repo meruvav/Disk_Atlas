@@ -41,6 +41,13 @@ env/
 *.html
 !src/web/*.html
 
+# Code-signing secrets — NEVER commit certificates or keys
+*.pfx
+*.p12
+*.key
+*.pvk
+*.snk
+
 # OS Specific
 .DS_Store
 Thumbs.db

@@ -50,6 +50,8 @@ Disk_Atlas/
 │   ├── build_windows.py          # 1-click Windows automated build pipeline
 │   ├── DiskAtlas.spec            # PyInstaller spec for the application
 │   ├── installer_windows.iss     # Inno Setup installer script (single Windows installer)
+│   ├── signing.py                # Windows Authenticode signing helpers
+│   ├── SIGNING.md                # Code-signing certificate setup guide
 │   ├── install_linux.sh          # Linux installer script
 │   └── build_macos.sh            # macOS packaging script
 │
@@ -90,6 +92,16 @@ dist/DiskAtlas_Setup_<version>.exe
 - **Desktop & Start Menu Shortcuts**: Automatically adds shortcuts for quick access.
 - **Windows Settings Integration**: Registers cleanly in **Windows Settings > Apps > Installed Apps** with a full uninstaller, version and publisher metadata.
 - **Silent Install**: Standard Inno Setup flags (`/SILENT`, `/VERYSILENT`, `/DIR=...`) work out of the box.
+
+### Code Signing (Windows)
+The pipeline signs `DiskAtlas.exe` and the setup wizard automatically when a signing certificate is configured (see `packaging/SIGNING.md`):
+
+```bash
+export DISK_ATLAS_SIGN_SUBJECT="Meruva LLC"
+python packaging/build_windows.py --require-sign
+```
+
+Signing supports a PFX file or the Windows certificate store, SHA-256 digests, and an RFC 3161 timestamp server so signatures outlive the certificate. Release builds should use `--require-sign` so an unconfigured machine fails loudly instead of producing an unsigned installer.
 
 ---
 

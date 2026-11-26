@@ -20,6 +20,12 @@ The Inno compiler is located via, in order:
     3. Default Inno Setup 6 install locations
 Install Inno Setup 6 from https://jrsoftware.org/isinfo.php
 
+Code signing runs automatically between stages (app exe before the
+installer is compiled, then the setup exe itself) whenever signing is
+configured through environment variables — see packaging/SIGNING.md.
+Use --no-sign to skip it, or --require-sign to fail instead of warn
+when no signing configuration is present.
+
 Build artifacts stay under dist/. Releases are published via CI
 (GitHub Actions), not by copying files into repo folders.
 """
@@ -31,6 +37,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import signing  # noqa: E402
+
 ROOT_DIR = Path(__file__).resolve().parent.parent
 DIST_DIR = ROOT_DIR / "dist"
 BUILD_DIR = ROOT_DIR / "build"
@@ -39,6 +48,52 @@ SRC_DIR = ROOT_DIR / "src"
 
 ISS_FILE = PACKAGING_DIR / "installer_windows.iss"
 SPEC_FILE = PACKAGING_DIR / "DiskAtlas.spec"
+
+# Signing state, initialised in main(). SIGNER=None means "no signing".
+SIGNER = None          # (signtool_path, signing.SigningConfig)
+
+
+def init_signing(no_sign: bool, require_sign: bool) -> None:
+    """Resolve signtool + certificate configuration once."""
+    global SIGNER
+
+    if no_sign:
+        print("  Signing: SKIPPED (--no-sign)")
+        return
+
+    config = signing.get_signing_config()
+    signtool = signing.find_signtool()
+
+    if config and signtool:
+        SIGNER = (signtool, config)
+        print(f"  Signing: ENABLED ({config.mode})")
+        return
+
+    reason = []
+    if not config:
+        reason.append("no DISK_ATLAS_SIGN_* environment variables set")
+    if config and not signtool:
+        reason.append("signtool.exe not found (need Windows SDK; see SIGNING.md)")
+    message = "code signing unavailable: " + "; ".join(reason)
+    if require_sign:
+        print(f"[-] Error: --require-sign given but {message}")
+        sys.exit(2)
+    print(f"  Signing: SKIPPED ({message})")
+
+
+def maybe_sign(target: Path) -> None:
+    """Sign a build artifact when signing is enabled. Must exist."""
+    if not SIGNER:
+        return
+    signtool, config = SIGNER
+    if not target.is_file():
+        print(f"[-] Error: expected artifact for signing is missing: {target}")
+        sys.exit(1)
+    print(f"\n[+] Signing {target.name}...")
+    run_command(
+        list(signing.build_sign_command(signtool, config, str(target))),
+        f"Authenticode-signing {target.name}",
+    )
 
 
 def read_version() -> str:
@@ -86,6 +141,12 @@ def find_iscc() -> str:
     sys.exit(2)
 
 
+def app_exe_path() -> Path:
+    """The built executable — .exe on Windows, extensionless elsewhere."""
+    name = "DiskAtlas.exe" if sys.platform == "win32" else "DiskAtlas"
+    return DIST_DIR / "DiskAtlas" / name
+
+
 def build_app() -> None:
     run_command(
         [
@@ -97,8 +158,8 @@ def build_app() -> None:
         ],
         "Building DiskAtlas application",
     )
-    if not (DIST_DIR / "DiskAtlas" / "DiskAtlas.exe").exists() and sys.platform == "win32":
-        print("[-] Error: dist/DiskAtlas/DiskAtlas.exe was not produced.")
+    if not app_exe_path().exists():
+        print(f"[-] Error: {app_exe_path()} was not produced.")
         sys.exit(1)
 
 
@@ -121,6 +182,11 @@ def main() -> None:
                         help="build dist/DiskAtlas/ only, skip the installer")
     parser.add_argument("--installer-only", action="store_true",
                         help="compile the Inno Setup installer from an existing dist/DiskAtlas/")
+    parser.add_argument("--no-sign", action="store_true",
+                        help="skip Authenticode signing even when configured")
+    parser.add_argument("--require-sign", action="store_true",
+                        help="fail the build when signing is not configured "
+                             "(use for release/CI builds)")
     args = parser.parse_args()
     if args.app_only and args.installer_only:
         parser.error("--app-only and --installer-only are mutually exclusive")
@@ -131,6 +197,7 @@ def main() -> None:
     print("        Disk Atlas - Windows Automated Build Pipeline")
     print("=" * 60)
     print(f"  Version: {version}")
+    init_signing(no_sign=args.no_sign, require_sign=args.require_sign)
 
     DIST_DIR.mkdir(parents=True, exist_ok=True)
     BUILD_DIR.mkdir(parents=True, exist_ok=True)
@@ -138,8 +205,12 @@ def main() -> None:
     installer_exe = None
     if not args.installer_only:
         build_app()
+        # Sign the app BEFORE it is packed into the installer, so the
+        # installer never ships an unsigned payload.
+        maybe_sign(app_exe_path())
     if not args.app_only:
         installer_exe = build_installer(version)
+        maybe_sign(installer_exe)
 
     print("\n" + "=" * 60)
     print("  BUILD SUCCESSFUL!")
@@ -152,7 +223,8 @@ def main() -> None:
         else:
             print(f"  Installer expected at: {installer_exe}")
             print("  (Inno reported success but the output file is missing — check its log.)")
-    print("  Next step before public release: code-sign the installer (Phase 5.3).")
+    if not SIGNER:
+        print("  NOTE: artifacts are UNSIGNED. Sign before public distribution.")
     print("=" * 60)
 
 
