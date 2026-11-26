@@ -48,10 +48,8 @@ Disk_Atlas/
 ├── packaging/                    # Multi-platform installers & build tools
 │   ├── scripts/                  # OS post-installation scripts
 │   ├── build_windows.py          # 1-click Windows automated build pipeline
-│   ├── installer.py              # Windows Setup wizard (GUI, shortcuts, registry)
-│   ├── DiskAtlas.spec            # PyInstaller spec for main application
-│   ├── DiskAtlas_Setup.spec      # PyInstaller spec for Setup wizard
-│   ├── installer_windows.iss     # Inno Setup installer script
+│   ├── DiskAtlas.spec            # PyInstaller spec for the application
+│   ├── installer_windows.iss     # Inno Setup installer script (single Windows installer)
 │   ├── install_linux.sh          # Linux installer script
 │   └── build_macos.sh            # macOS packaging script
 │
@@ -66,26 +64,32 @@ Disk_Atlas/
 ## 🛠️ Building Standalone Installers
 
 ### Windows Standalone Installer
-To build the complete standalone setup wizard (`DiskAtlas_Setup.exe`):
+The Windows installer is built with Inno Setup 6 (`packaging/installer_windows.iss`). To produce it:
 
 ```bash
-# Install PyInstaller
+# Install build dependencies + Inno Setup 6 (https://jrsoftware.org/isinfo.php)
 pip install -r requirements.txt
 
-# Run the 1-click build pipeline
+# Run the 1-click build pipeline (PyInstaller + Inno Setup)
 python packaging/build_windows.py
+
+# Or run only one stage:
+python packaging/build_windows.py --app-only
+python packaging/build_windows.py --installer-only
 ```
 
 The resulting standalone installer will be located at:
 ```text
-dist/DiskAtlas_Setup.exe
+dist/DiskAtlas_Setup_<version>.exe
 ```
 
-#### Features of `DiskAtlas_Setup.exe`:
-- **Interactive Directory Selection**: Choose where to install (e.g. `C:\Program Files\DiskAtlas` or a custom drive/folder).
+#### Features of `DiskAtlas_Setup_<version>.exe`:
+- **Interactive Directory Selection**: Choose where to install (e.g. `C:\Program Files\DiskAtlas` or a custom folder), including an optional per-user install without admin rights.
 - **Automatic Administrator Elevation**: Automatically elevates when installing into system-protected directories.
+- **Safe Upgrades**: A running Disk Atlas is closed automatically via Restart Manager before files are replaced.
 - **Desktop & Start Menu Shortcuts**: Automatically adds shortcuts for quick access.
-- **Windows Settings Integration**: Registers cleanly in **Windows Settings > Apps > Installed Apps** with a full uninstaller.
+- **Windows Settings Integration**: Registers cleanly in **Windows Settings > Apps > Installed Apps** with a full uninstaller, version and publisher metadata.
+- **Silent Install**: Standard Inno Setup flags (`/SILENT`, `/VERYSILENT`, `/DIR=...`) work out of the box.
 
 ---
 
