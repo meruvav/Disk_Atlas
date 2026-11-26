@@ -284,6 +284,42 @@ def list_system_drives():
 
     return [_home_entry()] + drives
 
+# --- SCAN EXCLUSION RULES ---
+# Names never descended into or counted, matched case-insensitively.
+# Dev artifacts regrow on demand and bloat scans by orders of magnitude;
+# system folders are unreadable OS internals that only add noise and
+# permission errors.
+DEFAULT_EXCLUSIONS = frozenset({
+    # Development artifacts
+    "node_modules", ".git", ".svn", ".hg",
+    # Windows system folders
+    "$recycle.bin", "system volume information",
+    # macOS volume metadata
+    ".trashes", ".spotlight-v100", ".fseventsd", ".documentrevisions-v100",
+    # Linux/Unix
+    "lost+found", ".trash",
+})
+# Per-user Linux trash folders look like ".Trash-1000" (UID suffix)
+_EXCLUDED_PREFIXES = (".trash-",)
+
+
+def normalize_exclusions(extra):
+    """Coerce an API-provided exclude list into a lowercase frozenset.
+    Accepts a list/tuple/set of names; anything else yields an empty set."""
+    if isinstance(extra, (list, tuple, set, frozenset)):
+        return frozenset(str(e).lower() for e in extra)
+    return frozenset()
+
+
+def is_excluded_name(name, extra=None):
+    """Case-insensitive exclusion check against the default rules plus an
+    optional per-scan set of additional names."""
+    n = name.lower()
+    if n in DEFAULT_EXCLUSIONS or n.startswith(_EXCLUDED_PREFIXES):
+        return True
+    return bool(extra) and n in extra
+
+
 # --- HIGH-PERFORMANCE ITERATIVE SCANNER ---
 class DiskScanner:
     def __init__(self):
@@ -295,6 +331,8 @@ class DiskScanner:
         self.total_bytes = 0
         self.last_result = None
         self.error_message = ""
+        self.excluded_count = 0
+        self._extra_exclusions = frozenset()
         self._last_progress_time = 0
         # Concurrency: _lock guards state transitions; _generation identifies
         # the current scan so a cancelled/superseded thread can't clobber
@@ -325,12 +363,13 @@ class DiskScanner:
         self.state = "idle"
         log.info("Scan cancelled by user")
 
-    def quick_scan(self, target_path):
+    def quick_scan(self, target_path, extra_exclusions=None):
         """Ultra-fast non-blocking scan of immediate folder contents (Level 1) in < 15ms."""
         target_path = os.path.abspath(target_path)
         if not os.path.isdir(target_path):
             raise FileNotFoundError(f"Path is not a valid directory: {target_path}")
 
+        extra_exclusions = normalize_exclusions(extra_exclusions)
         children = []
         total_size = 0
         file_count = 0
@@ -339,6 +378,8 @@ class DiskScanner:
         try:
             with os.scandir(target_path) as it:
                 for entry in it:
+                    if is_excluded_name(entry.name, extra_exclusions):
+                        continue
                     try:
                         if entry.is_symlink():
                             continue
@@ -385,7 +426,7 @@ class DiskScanner:
         self.last_result = result
         return result
 
-    def scan_path(self, target_path, gen=None):
+    def scan_path(self, target_path, gen=None, extra_exclusions=None):
         """Run a full scan. gen must come from begin_scan() so a superseded
         scan thread exits quietly instead of overwriting newer state."""
         if gen is None:
@@ -396,11 +437,15 @@ class DiskScanner:
         self.scanned_files = 0
         self.scanned_folders = 0
         self.total_bytes = 0
+        self.excluded_count = 0
+        self._extra_exclusions = normalize_exclusions(extra_exclusions)
         self.current_path = target_path
         self.error_message = ""
 
         started_at = time.time()
-        log.info("Scan started: %s (generation %d)", target_path, gen)
+        log.info("Scan started: %s (generation %d)%s", target_path, gen,
+                 f" with {len(self._extra_exclusions)} custom exclusions"
+                 if self._extra_exclusions else "")
         try:
             tree = self._iterative_scan(target_path, gen)
             if gen != self._generation:
@@ -412,9 +457,11 @@ class DiskScanner:
                 self.last_result = tree
                 self.state = "done"
                 log.info(
-                    "Scan done: %s — %d files, %d folders, %.1f MB in %.1fs",
+                    "Scan done: %s — %d files, %d folders, %.1f MB in %.1fs "
+                    "(%d entries excluded)",
                     target_path, self.scanned_files, self.scanned_folders,
-                    self.total_bytes / (1024 * 1024), time.time() - started_at)
+                    self.total_bytes / (1024 * 1024), time.time() - started_at,
+                    self.excluded_count)
         except Exception as e:
             if gen == self._generation:
                 self.error_message = str(e)
@@ -464,6 +511,10 @@ class DiskScanner:
                         items_processed += 1
                         if items_processed & 255 == 0 and not self._is_current(gen):
                             return root_node
+
+                        if is_excluded_name(entry.name, self._extra_exclusions):
+                            self.excluded_count += 1
+                            continue
 
                         try:
                             if entry.is_symlink():
@@ -533,7 +584,7 @@ class DiskAtlasRequestHandler(SimpleHTTPRequestHandler):
         self._send_json({"error": "Unauthorized"}, status=401)
 
     @staticmethod
-    def _try_start_deep_scan(target, force=False):
+    def _try_start_deep_scan(target, force=False, extra_exclusions=None):
         """Claim the scanner and launch a deep scan thread.
 
         Returns True if the scan started, False if another scan is running.
@@ -544,7 +595,9 @@ class DiskAtlasRequestHandler(SimpleHTTPRequestHandler):
         if gen is None:
             log.warning("Deep scan request for %s refused: scan already running", target)
             return False
-        threading.Thread(target=scanner_instance.scan_path, args=(target, gen),
+        threading.Thread(target=scanner_instance.scan_path,
+                         args=(target, gen),
+                         kwargs={"extra_exclusions": extra_exclusions},
                          daemon=True, name=f"scan-gen-{gen}").start()
         return True
 
@@ -586,7 +639,15 @@ class DiskAtlasRequestHandler(SimpleHTTPRequestHandler):
                 "scanned_files": scanner_instance.scanned_files,
                 "scanned_folders": scanner_instance.scanned_folders,
                 "total_bytes": scanner_instance.total_bytes,
+                "excluded": scanner_instance.excluded_count,
                 "error": scanner_instance.error_message
+            })
+        elif path == "/api/exclusions":
+            self._send_json({
+                "defaults": sorted(DEFAULT_EXCLUSIONS),
+                "prefixes": sorted(_EXCLUDED_PREFIXES),
+                "note": "POST /api/scan accepts {\"exclude\": [name, ...]} to add "
+                        "per-scan exclusions (matched case-insensitively)."
             })
         elif self.path.startswith("/api/quick-scan"):
             query = urllib.parse.urlparse(self.path).query
@@ -622,11 +683,14 @@ class DiskAtlasRequestHandler(SimpleHTTPRequestHandler):
 
         if self.path == "/api/quick-scan":
             target = payload.get("path")
+            extra = payload.get("exclude")
             if target and os.path.exists(target):
                 try:
-                    result = scanner_instance.quick_scan(target)
+                    result = scanner_instance.quick_scan(target, extra_exclusions=extra)
                     if payload.get("auto_deep", True):
-                        started = self._try_start_deep_scan(target, force=payload.get("force", False))
+                        started = self._try_start_deep_scan(
+                            target, force=payload.get("force", False),
+                            extra_exclusions=extra)
                         result["deep_scan"] = "started" if started else "already_running"
                     self._send_json(result)
                 except Exception as e:
@@ -636,11 +700,13 @@ class DiskAtlasRequestHandler(SimpleHTTPRequestHandler):
 
         elif self.path == "/api/scan":
             target = payload.get("path")
+            extra = payload.get("exclude")
             if not target:
                 self._send_json({"error": "Missing path parameter"}, status=400)
             elif not os.path.exists(target):
                 self._send_json({"error": f"Path does not exist: {target}"}, status=400)
-            elif self._try_start_deep_scan(target, force=payload.get("force", False)):
+            elif self._try_start_deep_scan(target, force=payload.get("force", False),
+                                           extra_exclusions=extra):
                 self._send_json({"status": "started", "path": target})
             else:
                 self._send_json({
