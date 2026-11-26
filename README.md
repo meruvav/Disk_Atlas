@@ -46,14 +46,15 @@ Disk_Atlas/
 │   └── disk_insight.py           # Compatibility wrapper
 │
 ├── packaging/                    # Multi-platform installers & build tools
-│   ├── scripts/                  # OS post-installation scripts
 │   ├── build_windows.py          # 1-click Windows automated build pipeline
 │   ├── DiskAtlas.spec            # PyInstaller spec for the application
 │   ├── installer_windows.iss     # Inno Setup installer script (single Windows installer)
 │   ├── signing.py                # Windows Authenticode signing helpers
 │   ├── SIGNING.md                # Code-signing certificate setup guide
 │   ├── install_linux.sh          # Linux installer script
-│   └── build_macos.sh            # macOS packaging script
+│   ├── build_macos.sh            # macOS sign / DMG / notarize pipeline
+│   ├── macos_entitlements.plist  # Hardened-runtime entitlements
+│   └── NOTARIZATION.md           # macOS signing & notarization guide
 │
 ├── run.py                        # Root launcher script (python run.py)
 ├── requirements.txt              # Build dependencies
@@ -102,6 +103,17 @@ python packaging/build_windows.py --require-sign
 ```
 
 Signing supports a PFX file or the Windows certificate store, SHA-256 digests, and an RFC 3161 timestamp server so signatures outlive the certificate. Release builds should use `--require-sign` so an unconfigured machine fails loudly instead of producing an unsigned installer.
+
+### macOS Standalone DMG (signed + notarized)
+The macOS pipeline builds the `.app` bundle, signs it with the hardened runtime, packages a DMG with an /Applications drag-target, notarizes it with Apple, and staples the ticket (see `packaging/NOTARIZATION.md`):
+
+```bash
+export DISK_ATLAS_MAC_SIGN_IDENTITY="Developer ID Application: Meruva LLC (TEAMID)"
+export DISK_ATLAS_MAC_NOTARY_PROFILE="disk-atlas-notary"
+./packaging/build_macos.sh --require-sign
+```
+
+Without a signing identity it falls back to ad-hoc signing for local dev builds. The guide covers the one-time Apple setup: Developer account, "Developer ID Application" certificate, and notarytool credentials.
 
 ---
 

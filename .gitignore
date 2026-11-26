@@ -38,6 +38,7 @@ env/
 *.exe
 *.zip
 *.tar.gz
+*.dmg
 *.html
 !src/web/*.html
 

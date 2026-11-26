@@ -1,6 +1,0 @@
-#!/bin/bash
-USER_DESKTOP="/Users/$USER/Desktop"
-if [ -d "$USER_DESKTOP" ]; then
-    ln -sf "/Applications/DiskAtlas.app" "$USER_DESKTOP/Disk Atlas"
-fi
-exit 0
