@@ -84,8 +84,40 @@ def _parse_proc_mounts(text):
     return mounts
 
 
+def _mount_label(path):
+    """Human-friendly name for a mount point."""
+    if path == "/":
+        return "System volume"
+    name = os.path.basename(path.rstrip(os.sep))
+    return name or path
+
+
+def _home_entry():
+    """The user's home folder, offered as the default first scan target."""
+    home = str(Path.home())
+    try:
+        usage = shutil.disk_usage(home)
+        total, free, used = usage.total, usage.free, usage.used
+    except (PermissionError, OSError):
+        total = free = used = 0
+    return {
+        "path": home,
+        "kind": "home",
+        "label": "Home folder",
+        "total": total,
+        "free": free,
+        "used": used,
+    }
+
+
 def list_system_drives():
-    """List user storage devices with capacity info: [{path, total, free, used}, ...]."""
+    """List scan targets with capacity info.
+
+    Returns [{path, kind, label, total, free, used}, ...] where kind is
+    "home" for the user's home folder (always the first entry, intended
+    as the friendly default scan target) or "drive" for storage devices.
+    label may be None (Windows), in which case the UI shows the path.
+    """
     drives = []
     seen_devices = set()
     seen_paths = set()
@@ -112,6 +144,8 @@ def list_system_drives():
             seen_devices.add(device)
         drives.append({
             "path": path,
+            "kind": "drive",
+            "label": _mount_label(path) if sys.platform != 'win32' else None,
             "total": usage.total,
             "free": usage.free,
             "used": usage.used,
@@ -125,17 +159,14 @@ def list_system_drives():
             drive_letters = [f"{chr(65 + i)}:\\" for i in range(26) if bitmask & (1 << i)]
 
         for d in drive_letters:
+            entry = {"path": d, "kind": "drive", "label": None}
             try:
                 usage = shutil.disk_usage(d)
-                drives.append({
-                    "path": d,
-                    "total": usage.total,
-                    "free": usage.free,
-                    "used": usage.used
-                })
+                entry.update({"total": usage.total, "free": usage.free, "used": usage.used})
             except (PermissionError, OSError):
-                drives.append({"path": d, "total": 0, "free": 0, "used": 0})
-        return drives
+                entry.update({"total": 0, "free": 0, "used": 0})
+            drives.append(entry)
+        return [_home_entry()] + drives
 
     # --- POSIX: always include the root filesystem ---
     add_mount("/")
@@ -149,7 +180,7 @@ def list_system_drives():
                     add_mount(p)
         except OSError:
             pass
-        return drives
+        return [_home_entry()] + drives
 
     # --- Linux/other POSIX ---
     mounts = None
@@ -179,7 +210,7 @@ def list_system_drives():
             except OSError:
                 continue
 
-    return drives
+    return [_home_entry()] + drives
 
 # --- HIGH-PERFORMANCE ITERATIVE SCANNER ---
 class DiskScanner:

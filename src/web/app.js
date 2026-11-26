@@ -12,6 +12,7 @@ class DiskAtlasApp {
     this.selectedNode = null;
     this.breadcrumbTrail = [];
     this.theme = 'dark';
+    this.activeScope = 'folder'; // 'folder', 'drive' ('all' is not implemented yet)
     this.viewMode = 'city'; // 'city', 'layers', 'terrain', 'list'
     this.activeTab = 'contents'; // 'contents', 'hierarchy', 'largest', 'insights'
     this.isScanning = false;
@@ -697,6 +698,15 @@ class DiskAtlasApp {
   }
 
   // --- API BACKEND INTEGRATION ---
+  driveOptionText(d) {
+    const name = d.label || d.path;
+    if (d.kind === 'home') return `${name} — ${d.path}`;
+    if (d.total > 0) {
+      return `${name} — ${this.formatBytes(d.free)} free of ${this.formatBytes(d.total)}`;
+    }
+    return `${name} (unavailable)`;
+  }
+
   async fetchDrives() {
     try {
       const res = await this.apiFetch('/api/drives');
@@ -708,14 +718,53 @@ class DiskAtlasApp {
           drives.forEach(d => {
             const opt = document.createElement('option');
             opt.value = d.path;
-            opt.innerText = `${d.path} (${this.formatBytes(d.total)})`;
+            opt.innerText = this.driveOptionText(d);
+            if (d.kind !== 'home' && !(d.total > 0)) opt.disabled = true;
             select.appendChild(opt);
           });
+
+          // Default scan target: home folder if offered, else first drive.
+          // Never auto-scan: the user confirms with the Scan button.
+          const preferred = drives.find(d => d.kind === 'home') || drives[0];
+          select.value = preferred.path;
           const pathInput = document.getElementById('path-input');
-          if (pathInput && !pathInput.value) pathInput.value = drives[0].path;
+          if (pathInput && !pathInput.value) pathInput.value = preferred.path;
+
+          // First-run hint: make the next step obvious
+          if (!this.currentData) {
+            this.showScanStatusPill(`Ready — press Scan to analyze ${preferred.path}`);
+          }
         }
       }
     } catch (e) {}
+  }
+
+  // --- SCOPE PILLS (Folder / Drive / All drives) ---
+  onScopeChange(scope) {
+    const driveSelect = document.getElementById('drive-select');
+    const pathInput = document.getElementById('path-input');
+
+    if (scope === 'all') {
+      // Multi-drive scans are not supported by the engine yet; be honest
+      // about it instead of silently scanning nothing useful.
+      this.showScanStatusPill('Scanning all drives at once is not supported yet — pick a single drive.');
+      const prev = document.querySelector(`.scope-btn[data-scope="${this.activeScope || 'folder'}"]`);
+      document.querySelectorAll('.scope-btn').forEach(b => b.classList.remove('active'));
+      if (prev) prev.classList.add('active');
+      return;
+    }
+
+    this.activeScope = scope;
+
+    if (scope === 'drive') {
+      // Drive mode: the picker drives the path input
+      if (driveSelect && driveSelect.value) {
+        if (pathInput) pathInput.value = driveSelect.value;
+        driveSelect.focus();
+      }
+    } else if (scope === 'folder') {
+      if (pathInput) pathInput.focus();
+    }
   }
 
   async browseDirectory() {
