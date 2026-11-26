@@ -11,12 +11,20 @@ added_files = [
     (str(SRC_DIR / "web"), "web"),
 ]
 
+hidden_imports = ["webview"]
+try:
+    # pywebview ships JS/assets that must be bundled for the native window
+    from PyInstaller.utils.hooks import collect_data_files
+    added_files += collect_data_files("webview")
+except Exception:
+    pass
+
 a = Analysis(
-    [str(SRC_DIR / "disk_atlas.py")],
+    [str(SRC_DIR / "desktop.py")],
     pathex=[str(SRC_DIR)],
     binaries=[],
     datas=added_files,
-    hiddenimports=[],
+    hiddenimports=hidden_imports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

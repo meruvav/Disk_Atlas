@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """
 Disk Atlas — Main Application Launcher
-Run this script to launch Disk Atlas:
+Run this script to launch Disk Atlas in a native desktop window:
     python run.py
+
+For development server mode (opens in a browser tab):
+    python src/disk_atlas.py --browser
 """
 import sys
 from pathlib import Path
@@ -10,7 +13,7 @@ from pathlib import Path
 # Add src/ to module search path
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
-from disk_atlas import run_disk_atlas
+from desktop import main
 
 if __name__ == "__main__":
-    run_disk_atlas()
+    main()

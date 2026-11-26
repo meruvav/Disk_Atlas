@@ -154,6 +154,18 @@ class DiskAtlasApp {
     document.getElementById('modal-cancel-btn')?.addEventListener('click', () => this.cancelScan());
   }
 
+  // --- CENTRALIZED API HELPER ---
+  // Attaches the per-launch auth token (injected into index.html by the
+  // backend) to every request. In exported standalone reports the token is
+  // empty and all API calls simply fail gracefully into static mode.
+  apiFetch(path, opts = {}) {
+    const headers = Object.assign({}, opts.headers || {});
+    if (window.__DA_TOKEN__) {
+      headers['X-Disk-Atlas-Token'] = window.__DA_TOKEN__;
+    }
+    return fetch(path, Object.assign({}, opts, { headers }));
+  }
+
   // --- FAST FOLDER LOADER (< 15ms Preview + Progressive Deep Scan) ---
   async loadFolderQuickly(targetPath, triggerDeep = true) {
     if (!targetPath) return;
@@ -165,7 +177,7 @@ class DiskAtlasApp {
     this.showScanStatusPill(`⚡ Opening ${targetPath}...`);
 
     try {
-      const res = await fetch('/api/quick-scan', {
+      const res = await this.apiFetch('/api/quick-scan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: targetPath, auto_deep: triggerDeep })
@@ -345,7 +357,7 @@ class DiskAtlasApp {
     // If folder children are not loaded yet (shallow preview), fetch instantly in < 15ms
     if (!node.children || node.children.length === 0) {
       try {
-        const res = await fetch(`/api/quick-scan?path=${encodeURIComponent(node.path)}`);
+        const res = await this.apiFetch(`/api/quick-scan?path=${encodeURIComponent(node.path)}`);
         if (res.ok) {
           const subData = await res.json();
           node.children = subData.children || [];
@@ -687,7 +699,7 @@ class DiskAtlasApp {
   // --- API BACKEND INTEGRATION ---
   async fetchDrives() {
     try {
-      const res = await fetch('/api/drives');
+      const res = await this.apiFetch('/api/drives');
       if (res.ok) {
         const drives = await res.json();
         const select = document.getElementById('drive-select');
@@ -708,7 +720,7 @@ class DiskAtlasApp {
 
   async browseDirectory() {
     try {
-      const res = await fetch('/api/browse', { method: 'POST' });
+      const res = await this.apiFetch('/api/browse', { method: 'POST' });
       if (res.ok) {
         const data = await res.json();
         if (data.preview) {
@@ -735,7 +747,7 @@ class DiskAtlasApp {
     this.showScanStatusPill(`🔍 Scanning ${path}...`);
 
     try {
-      await fetch('/api/scan', {
+      await this.apiFetch('/api/scan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: path })
@@ -750,7 +762,7 @@ class DiskAtlasApp {
 
   async pollScanStatus() {
     try {
-      const res = await fetch('/api/status');
+      const res = await this.apiFetch('/api/status');
       if (res.ok) {
         const status = await res.json();
 
@@ -775,7 +787,7 @@ class DiskAtlasApp {
     this.updateScanButtonUI(false);
     this.hideScanStatusPill();
     try {
-      await fetch('/api/cancel', { method: 'POST' });
+      await this.apiFetch('/api/cancel', { method: 'POST' });
     } catch (e) {}
   }
 
@@ -794,7 +806,7 @@ class DiskAtlasApp {
 
   async fetchCurrentData() {
     try {
-      const res = await fetch('/api/data');
+      const res = await this.apiFetch('/api/data');
       if (res.ok) {
         const data = await res.json();
         this.setData(data);
@@ -808,7 +820,7 @@ class DiskAtlasApp {
 
   async openInExplorer(path) {
     try {
-      await fetch('/api/open-folder', {
+      await this.apiFetch('/api/open-folder', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: path })
@@ -818,7 +830,7 @@ class DiskAtlasApp {
 
   async exportHtml() {
     try {
-      const res = await fetch('/api/export', { method: 'POST' });
+      const res = await this.apiFetch('/api/export', { method: 'POST' });
       if (res.ok) {
         const result = await res.json();
         alert(`Standalone HTML report exported successfully!\nSaved to: ${result.path}`);

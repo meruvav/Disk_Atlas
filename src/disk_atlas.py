@@ -4,7 +4,9 @@ Disk Atlas — Desktop Engine & Scanner
 Merges 3D Storage City, Folder Layers, and Storage Terrain visualizations into a unified application.
 """
 
+import hmac
 import os
+import secrets
 import sys
 import json
 import time
@@ -257,8 +259,48 @@ class DiskAtlasRequestHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(WEB_DIR), **kwargs)
 
+    # --- Per-launch token auth ---
+    # Every /api/* request must carry the launch token in X-Disk-Atlas-Token.
+    # The token is injected into index.html at serve time, so only pages served
+    # by this same server instance know it. Combined with no CORS headers,
+    # cross-origin web pages cannot read the token or call the API.
+    def _authorized(self):
+        expected = getattr(self.server, "auth_token", "")
+        provided = self.headers.get("X-Disk-Atlas-Token", "")
+        return bool(expected) and hmac.compare_digest(provided, expected)
+
+    def _reject_unauthorized(self):
+        self._send_json({"error": "Unauthorized"}, status=401)
+
+    def _serve_index(self):
+        index_file = WEB_DIR / "index.html"
+        try:
+            html = index_file.read_text(encoding="utf-8")
+        except OSError:
+            self.send_error(404, "index.html not found")
+            return
+        token = getattr(self.server, "auth_token", "")
+        html = html.replace(
+            'window.__DA_TOKEN__ = "";',
+            f'window.__DA_TOKEN__ = "{token}";',
+            1,
+        )
+        body = html.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
-        if self.path == "/api/drives":
+        path = urllib.parse.urlparse(self.path).path
+        if path.startswith("/api/") and not self._authorized():
+            self._reject_unauthorized()
+            return
+        if path in ("/", "/index.html"):
+            self._serve_index()
+            return
+        if path == "/api/drives":
             drives = list_system_drives()
             self._send_json(drives)
         elif self.path == "/api/status":
@@ -291,6 +333,10 @@ class DiskAtlasRequestHandler(SimpleHTTPRequestHandler):
             super().do_GET()
 
     def do_POST(self):
+        path = urllib.parse.urlparse(self.path).path
+        if path.startswith("/api/") and not self._authorized():
+            self._reject_unauthorized()
+            return
         content_length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_length) if content_length > 0 else b"{}"
         try:
@@ -431,11 +477,13 @@ class DiskAtlasRequestHandler(SimpleHTTPRequestHandler):
         return str(export_file)
 
     def _send_json(self, data, status=200):
+        # Note: intentionally no Access-Control-Allow-Origin header. The app is
+        # same-origin, and omitting CORS prevents any other website open in the
+        # user's browser from reading API responses.
         body = json.dumps(data).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(body)
 
@@ -443,33 +491,40 @@ class DiskAtlasRequestHandler(SimpleHTTPRequestHandler):
         # Quiet server logs
         pass
 
-# --- SERVER RUNNER & APP LAUNCHER ---
-def run_disk_atlas(port=8765):
+# --- SERVER FACTORY & RUNNERS ---
+def create_server(port=0):
+    """Create the Disk Atlas HTTP server.
+
+    port=0 asks the OS for a free port, which avoids collisions with other
+    apps and makes the fixed port unpredictable to local web pages.
+    Returns (server, actual_port). The per-launch API token is available as
+    server.auth_token.
+    """
     class ThreadedHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
         daemon_threads = True
 
     server = ThreadedHTTPServer(("127.0.0.1", port), DiskAtlasRequestHandler)
+    server.auth_token = secrets.token_urlsafe(32)
+    return server, server.server_address[1]
+
+
+def run_disk_atlas(port=0, open_browser=True):
+    """Development/CLI runner: start the engine and (optionally) open a browser.
+
+    The packaged desktop app uses src/desktop.py instead, which embeds the UI
+    in a native pywebview window and manages the server lifecycle itself.
+    """
+    server, actual_port = create_server(port)
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
 
-    url = f"http://127.0.0.1:{port}"
+    url = f"http://127.0.0.1:{actual_port}"
     print(f"==================================================")
     print(f" Disk Atlas is running at: {url}")
     print(f" Close this terminal window to stop the engine.")
     print(f"==================================================")
 
-    # Launch in Edge/Chrome dedicated app window mode (looks like native desktop application)
-    launched_app_mode = False
-    if sys.platform == 'win32':
-        edge_path = r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
-        if os.path.exists(edge_path):
-            try:
-                subprocess.Popen([edge_path, f"--app={url}"])
-                launched_app_mode = True
-            except Exception:
-                pass
-
-    if not launched_app_mode:
+    if open_browser:
         webbrowser.open(url)
 
     try:
@@ -480,7 +535,9 @@ def run_disk_atlas(port=8765):
         server.shutdown()
 
 if __name__ == "__main__":
-    port = 8765
-    if len(sys.argv) > 1 and sys.argv[1].isdigit():
-        port = int(sys.argv[1])
-    run_disk_atlas(port)
+    port = 0
+    open_browser = "--browser" in sys.argv
+    args = [a for a in sys.argv[1:] if a != "--browser"]
+    if args and args[0].isdigit():
+        port = int(args[0])
+    run_disk_atlas(port, open_browser=open_browser)
