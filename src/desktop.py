@@ -22,22 +22,16 @@ if getattr(sys, "frozen", False):
 else:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from disk_atlas import create_server, run_disk_atlas
+from disk_atlas import (
+    create_server,
+    install_crash_hook,
+    log,
+    run_disk_atlas,
+    setup_logging,
+    user_data_dir,
+)
 
 APP_NAME = "Disk Atlas"
-
-
-def user_data_dir():
-    """Per-user writable directory for Disk Atlas state (lock file, logs, cache)."""
-    if sys.platform == "win32":
-        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
-    elif sys.platform == "darwin":
-        base = Path.home() / "Library" / "Application Support"
-    else:
-        base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
-    d = base / "DiskAtlas"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
 
 
 def acquire_single_instance_lock():
@@ -70,25 +64,37 @@ def acquire_single_instance_lock():
     return fh
 
 
-def notify_already_running():
-    msg = f"{APP_NAME} is already running. Check your taskbar or system tray."
-    print(msg)
+def show_message(title, msg, error=False):
+    """Native message box, safe to call from a console-less frozen build."""
+    print(f"{title}: {msg}")
     try:
         import tkinter as tk
         from tkinter import messagebox
         root = tk.Tk()
         root.withdraw()
         root.attributes("-topmost", True)
-        messagebox.showinfo(APP_NAME, msg)
+        (messagebox.showerror if error else messagebox.showinfo)(title, msg)
         root.destroy()
     except Exception:
         pass
 
 
+def notify_already_running():
+    show_message(APP_NAME,
+                 f"{APP_NAME} is already running. Check your taskbar or system tray.")
+
+
 def main():
+    # Logging first: with console=False in the frozen build, the log file is
+    # the only place startup failures are visible.
+    setup_logging()
+    install_crash_hook()
+    log.info("%s desktop shell starting", APP_NAME)
+
     # Single-instance guard
     lock_handle = acquire_single_instance_lock()
     if lock_handle is None:
+        log.warning("Second launch attempt refused: another instance holds the lock")
         notify_already_running()
         sys.exit(0)
 
@@ -123,8 +129,19 @@ def main():
     window.events.closed += on_closed
 
     # Blocks until the window closes
-    webview.start()
+    try:
+        webview.start()
+    except Exception as e:
+        log.critical("Desktop window failed", exc_info=True)
+        show_message(f"{APP_NAME} — Startup Error",
+                     f"The application window could not be started.\n\n{e}\n\n"
+                     f"Details were written to the log file in:\n{user_data_dir() / 'logs'}",
+                     error=True)
+        server.shutdown()
+        server.server_close()
+        sys.exit(1)
 
+    log.info("Window closed; engine stopped")
     # Guarantee process exit even if background threads linger
     os._exit(0)
 

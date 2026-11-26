@@ -192,7 +192,11 @@ class DiskAtlasApp {
         if (triggerDeep) {
           this.isScanning = true;
           this.updateScanButtonUI(true);
-          this.showScanStatusPill(`🔍 Calculating deep sizes...`);
+          if (data.deep_scan === 'already_running') {
+            this.showScanStatusPill(`🔍 Another scan is already running — showing its progress...`);
+          } else {
+            this.showScanStatusPill(`🔍 Calculating deep sizes...`);
+          }
           if (this.scanPollTimer) clearInterval(this.scanPollTimer);
           this.scanPollTimer = setInterval(() => this.pollScanStatus(), 400);
         } else {
@@ -796,11 +800,22 @@ class DiskAtlasApp {
     this.showScanStatusPill(`🔍 Scanning ${path}...`);
 
     try {
-      await this.apiFetch('/api/scan', {
+      const res = await this.apiFetch('/api/scan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: path })
       });
+
+      if (res.status === 409) {
+        // A scan is already running on the engine: attach to its progress
+        this.showScanStatusPill(`🔍 A scan is already running — showing its progress...`);
+      } else if (res.status === 400) {
+        const err = await res.json().catch(() => ({}));
+        this.showScanStatusPill(`⚠️ ${err.error || 'Invalid path'}`);
+        this.isScanning = false;
+        this.updateScanButtonUI(false);
+        return;
+      }
 
       if (this.scanPollTimer) clearInterval(this.scanPollTimer);
       this.scanPollTimer = setInterval(() => this.pollScanStatus(), 400);

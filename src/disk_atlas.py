@@ -5,6 +5,8 @@ Merges 3D Storage City, Folder Layers, and Storage Terrain visualizations into a
 """
 
 import hmac
+import logging
+import logging.handlers
 import os
 import secrets
 import sys
@@ -38,6 +40,76 @@ elif (Path(sys.executable).parent / "_internal" / "web").exists():
     WEB_DIR = Path(sys.executable).parent / "_internal" / "web"
 else:
     WEB_DIR = BASE_DIR / "web"
+
+# --- USER DATA DIR & LOGGING ---
+def user_data_dir():
+    """Per-user writable directory for Disk Atlas state (lock file, logs, cache)."""
+    if sys.platform == "win32":
+        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library" / "Application Support"
+    else:
+        base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+    d = base / "DiskAtlas"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+log = logging.getLogger("disk_atlas")
+_logging_ready = False
+
+
+def setup_logging():
+    """Idempotent logging setup: rotating file in the user data dir.
+
+    2 MB per file, 3 backups — enough history to debug a bad scan without
+    growing unbounded. The packaged app has console=False, so this file is
+    the only place fatal errors are visible.
+    """
+    global _logging_ready
+    if _logging_ready:
+        return log
+    _logging_ready = True
+
+    log.setLevel(logging.DEBUG)
+    fmt = logging.Formatter("%(asctime)s %(levelname)-7s [%(threadName)s] %(message)s")
+    try:
+        log_dir = user_data_dir() / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        fh = logging.handlers.RotatingFileHandler(
+            log_dir / "app.log", maxBytes=2 * 1024 * 1024, backupCount=3,
+            encoding="utf-8")
+        fh.setLevel(logging.DEBUG)
+        fh.setFormatter(fmt)
+        log.addHandler(fh)
+        log.info("Log file: %s", log_dir / "app.log")
+    except OSError as e:
+        # Never let logging failure stop the app
+        print(f"[Disk Atlas] Could not open log file: {e}")
+
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.WARNING)
+    ch.setFormatter(fmt)
+    log.addHandler(ch)
+    return log
+
+
+def install_crash_hook():
+    """Log uncaught exceptions (main thread and worker threads) so frozen
+    builds with console=False don't fail silently."""
+    def _hook(exc_type, exc_value, exc_tb):
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc_value, exc_tb)
+            return
+        log.critical("Uncaught exception", exc_info=(exc_type, exc_value, exc_tb))
+
+    def _thread_hook(args):
+        log.critical("Uncaught exception in thread %s", args.thread.name,
+                     exc_info=(args.exc_type, args.exc_value, args.exc_traceback))
+
+    sys.excepthook = _hook
+    threading.excepthook = _thread_hook
+
 
 # --- DRIVE DETECTION UTILITIES ---
 # Filesystems that never represent user storage devices.
@@ -224,10 +296,34 @@ class DiskScanner:
         self.last_result = None
         self.error_message = ""
         self._last_progress_time = 0
+        # Concurrency: _lock guards state transitions; _generation identifies
+        # the current scan so a cancelled/superseded thread can't clobber
+        # the state of its successor.
+        self._lock = threading.Lock()
+        self._generation = 0
+
+    def begin_scan(self):
+        """Atomically claim the scanner for a new scan.
+
+        Returns the new scan's generation id, or None if a scan is already
+        running (caller should respond HTTP 409)."""
+        with self._lock:
+            if self.state == "scanning":
+                return None
+            self.state = "scanning"
+            self._generation += 1
+            # A claimed scan starts un-cancelled: the event belongs to the
+            # generation, not to the scanner object.
+            self.cancel_event.clear()
+            return self._generation
+
+    def _is_current(self, gen):
+        return gen == self._generation and not self.cancel_event.is_set()
 
     def cancel(self):
         self.cancel_event.set()
         self.state = "idle"
+        log.info("Scan cancelled by user")
 
     def quick_scan(self, target_path):
         """Ultra-fast non-blocking scan of immediate folder contents (Level 1) in < 15ms."""
@@ -289,27 +385,43 @@ class DiskScanner:
         self.last_result = result
         return result
 
-    def scan_path(self, target_path):
-        self.state = "scanning"
-        self.cancel_event.clear()
+    def scan_path(self, target_path, gen=None):
+        """Run a full scan. gen must come from begin_scan() so a superseded
+        scan thread exits quietly instead of overwriting newer state."""
+        if gen is None:
+            gen = self.begin_scan()
+            if gen is None:
+                log.warning("scan_path called while another scan is running; ignored")
+                return
         self.scanned_files = 0
         self.scanned_folders = 0
         self.total_bytes = 0
         self.current_path = target_path
         self.error_message = ""
 
+        started_at = time.time()
+        log.info("Scan started: %s (generation %d)", target_path, gen)
         try:
-            tree = self._iterative_scan(target_path)
+            tree = self._iterative_scan(target_path, gen)
+            if gen != self._generation:
+                log.info("Scan generation %d superseded; discarding result", gen)
+                return
             if self.cancel_event.is_set():
                 self.state = "idle"
             else:
                 self.last_result = tree
                 self.state = "done"
+                log.info(
+                    "Scan done: %s — %d files, %d folders, %.1f MB in %.1fs",
+                    target_path, self.scanned_files, self.scanned_folders,
+                    self.total_bytes / (1024 * 1024), time.time() - started_at)
         except Exception as e:
-            self.error_message = str(e)
-            self.state = "error"
+            if gen == self._generation:
+                self.error_message = str(e)
+                self.state = "error"
+                log.error("Scan failed: %s — %s", target_path, e)
 
-    def _iterative_scan(self, root_path):
+    def _iterative_scan(self, root_path, gen):
         root_path = os.path.abspath(root_path)
         if not os.path.exists(root_path):
             raise FileNotFoundError(f"Path does not exist: {root_path}")
@@ -333,7 +445,7 @@ class DiskScanner:
         items_processed = 0
 
         while stack:
-            if self.cancel_event.is_set():
+            if not self._is_current(gen):
                 return root_node
 
             curr = stack.pop()
@@ -350,7 +462,7 @@ class DiskScanner:
                 with os.scandir(curr) as it:
                     for entry in it:
                         items_processed += 1
-                        if items_processed & 255 == 0 and self.cancel_event.is_set():
+                        if items_processed & 255 == 0 and not self._is_current(gen):
                             return root_node
 
                         try:
@@ -417,7 +529,24 @@ class DiskAtlasRequestHandler(SimpleHTTPRequestHandler):
         return bool(expected) and hmac.compare_digest(provided, expected)
 
     def _reject_unauthorized(self):
+        log.debug("Rejected unauthenticated %s request to %s", self.command, self.path)
         self._send_json({"error": "Unauthorized"}, status=401)
+
+    @staticmethod
+    def _try_start_deep_scan(target, force=False):
+        """Claim the scanner and launch a deep scan thread.
+
+        Returns True if the scan started, False if another scan is running.
+        With force=True the running scan is cancelled first."""
+        if force:
+            scanner_instance.cancel()
+        gen = scanner_instance.begin_scan()
+        if gen is None:
+            log.warning("Deep scan request for %s refused: scan already running", target)
+            return False
+        threading.Thread(target=scanner_instance.scan_path, args=(target, gen),
+                         daemon=True, name=f"scan-gen-{gen}").start()
+        return True
 
     def _serve_index(self):
         index_file = WEB_DIR / "index.html"
@@ -497,7 +626,8 @@ class DiskAtlasRequestHandler(SimpleHTTPRequestHandler):
                 try:
                     result = scanner_instance.quick_scan(target)
                     if payload.get("auto_deep", True):
-                        threading.Thread(target=scanner_instance.scan_path, args=(target,), daemon=True).start()
+                        started = self._try_start_deep_scan(target, force=payload.get("force", False))
+                        result["deep_scan"] = "started" if started else "already_running"
                     self._send_json(result)
                 except Exception as e:
                     self._send_json({"error": str(e)}, status=500)
@@ -506,11 +636,18 @@ class DiskAtlasRequestHandler(SimpleHTTPRequestHandler):
 
         elif self.path == "/api/scan":
             target = payload.get("path")
-            if target:
-                threading.Thread(target=scanner_instance.scan_path, args=(target,), daemon=True).start()
+            if not target:
+                self._send_json({"error": "Missing path parameter"}, status=400)
+            elif not os.path.exists(target):
+                self._send_json({"error": f"Path does not exist: {target}"}, status=400)
+            elif self._try_start_deep_scan(target, force=payload.get("force", False)):
                 self._send_json({"status": "started", "path": target})
             else:
-                self._send_json({"error": "Missing path parameter"}, status=400)
+                self._send_json({
+                    "error": "A scan is already in progress",
+                    "state": "scanning",
+                    "hint": "POST with {\"force\": true} to cancel it and start this one"
+                }, status=409)
 
         elif self.path == "/api/cancel":
             scanner_instance.cancel()
@@ -535,6 +672,7 @@ class DiskAtlasRequestHandler(SimpleHTTPRequestHandler):
 
         elif self.path == "/api/export":
             export_path = self._export_standalone_html()
+            log.info("Exported standalone report: %s", export_path)
             self._send_json({"status": "exported", "path": export_path})
         else:
             self._send_json({"error": "Not Found"}, status=404)
@@ -647,12 +785,17 @@ def create_server(port=0):
     Returns (server, actual_port). The per-launch API token is available as
     server.auth_token.
     """
+    setup_logging()
+    install_crash_hook()
+
     class ThreadedHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
         daemon_threads = True
 
     server = ThreadedHTTPServer(("127.0.0.1", port), DiskAtlasRequestHandler)
     server.auth_token = secrets.token_urlsafe(32)
-    return server, server.server_address[1]
+    actual_port = server.server_address[1]
+    log.info("Engine started on http://127.0.0.1:%d (pid %d)", actual_port, os.getpid())
+    return server, actual_port
 
 
 def run_disk_atlas(port=0, open_browser=True):
@@ -679,6 +822,7 @@ def run_disk_atlas(port=0, open_browser=True):
             time.sleep(1)
     except KeyboardInterrupt:
         print("\nStopping Disk Atlas...")
+        log.info("Engine shutting down (KeyboardInterrupt)")
         server.shutdown()
 
 if __name__ == "__main__":
