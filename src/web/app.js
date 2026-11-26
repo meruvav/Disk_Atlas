@@ -814,8 +814,54 @@ class DiskAtlasApp {
       }
     } catch (e) {}
 
-    // Fallback Mock Data if opening directly without server
-    this.loadSampleData();
+    // No scan data on the server: show the empty state and wait for
+    // the user to pick a drive/folder and press Scan.
+    this.showEmptyState();
+  }
+
+  // --- EMPTY STATE (no scan data yet) ---
+  showEmptyState() {
+    this.currentData = null;
+    this.currentNode = null;
+    this.selectedNode = null;
+    this.breadcrumbTrail = [];
+    this.nodePathMap.clear();
+
+    // Stats ribbon
+    document.getElementById('ribbon-path').innerText = '—';
+    document.getElementById('stat-total-size').innerText = '—';
+    document.getElementById('stat-file-count').innerText = '—';
+    document.getElementById('stat-folder-count').innerText = '—';
+    document.getElementById('stat-scan-time').innerText = 'Not scanned yet';
+
+    // Summary card + details footer
+    document.getElementById('summary-icon').innerText = '📁';
+    document.getElementById('summary-name').innerText = 'Nothing selected';
+    document.getElementById('summary-size').innerText = '—';
+    document.getElementById('summary-percent').innerText = '—';
+    document.getElementById('summary-items-count').innerText = '—';
+    document.getElementById('size-bar-fill').style.width = '0%';
+    document.getElementById('detail-type').innerText = '—';
+    document.getElementById('detail-path').innerText = '—';
+    document.getElementById('detail-bytes').innerText = '—';
+    document.getElementById('detail-contains').innerText = '—';
+
+    this.updateBreadcrumbs();
+
+    // Inspector panes: friendly prompt instead of demo rows
+    const emptyMsg = `
+      <div style="padding: 28px 16px; text-align:center; color: var(--text-dim); font-size: 0.85rem; line-height: 1.6;">
+        <div style="font-size: 1.6rem; margin-bottom: 8px;">🗂️</div>
+        No scan data yet.<br>
+        Pick a drive or folder above, then press <strong>Scan</strong>.
+      </div>`;
+    ['tab-contents', 'tab-hierarchy', 'tab-largest', 'tab-insights'].forEach(id => {
+      const pane = document.getElementById(id);
+      if (pane) pane.innerHTML = emptyMsg;
+    });
+
+    // Clear the 3D scene
+    this.vis.setData(null);
   }
 
   async openInExplorer(path) {
@@ -838,104 +884,6 @@ class DiskAtlasApp {
     } catch (e) {
       alert("Exporting HTML is supported through the Python backend launcher.");
     }
-  }
-
-  // --- SAMPLE DATA GENERATOR (MATCHING IMAGES) ---
-  loadSampleData() {
-    const mock = {
-      name: "Archive",
-      path: "D:\\Archive",
-      type: "folder",
-      size: 240 * 1024 * 1024 * 1024,
-      children: [
-        {
-          name: "Videos",
-          path: "D:\\Archive\\Videos",
-          type: "folder",
-          size: 120 * 1024 * 1024 * 1024,
-          children: [
-            {
-              name: "Recordings",
-              path: "D:\\Archive\\Videos\\Recordings",
-              type: "folder",
-              size: 72 * 1024 * 1024 * 1024,
-              children: [
-                { name: "Vacation 2023", path: "D:\\Archive\\Videos\\Recordings\\Vacation 2023", size: 28.4 * 1024 * 1024 * 1024, type: "folder" },
-                { name: "Family", path: "D:\\Archive\\Videos\\Recordings\\Family", size: 18.1 * 1024 * 1024 * 1024, type: "folder" },
-                { name: "Screen Recordings", path: "D:\\Archive\\Videos\\Recordings\\Screen Recordings", size: 11.6 * 1024 * 1024 * 1024, type: "folder" },
-                { name: "Drone Footage", path: "D:\\Archive\\Videos\\Recordings\\Drone Footage", size: 7.9 * 1024 * 1024 * 1024, type: "folder" },
-                { name: "Documentary_4K.mkv", path: "D:\\Archive\\Videos\\Recordings\\Documentary_4K.mkv", size: 8.4 * 1024 * 1024 * 1024, type: "file", ext: ".mkv" },
-                { name: "rec_2023_07_14.mp4", path: "D:\\Archive\\Videos\\Recordings\\rec_2023_07_14.mp4", size: 4.8 * 1024 * 1024 * 1024, type: "file", ext: ".mp4" },
-                { name: "rec_2023_06_02.mp4", path: "D:\\Archive\\Videos\\Recordings\\rec_2023_06_02.mp4", size: 3.9 * 1024 * 1024 * 1024, type: "file", ext: ".mp4" }
-              ]
-            },
-            {
-              name: "Movies",
-              path: "D:\\Archive\\Videos\\Movies",
-              type: "folder",
-              size: 36 * 1024 * 1024 * 1024,
-              children: [
-                { name: "Series", path: "D:\\Archive\\Videos\\Movies\\Series", size: 28 * 1024 * 1024 * 1024, type: "folder" },
-                { name: "Clips", path: "D:\\Archive\\Videos\\Movies\\Clips", size: 8 * 1024 * 1024 * 1024, type: "folder" }
-              ]
-            },
-            {
-              name: "Clips",
-              path: "D:\\Archive\\Videos\\Clips",
-              type: "folder",
-              size: 12 * 1024 * 1024 * 1024,
-              children: [
-                { name: "interview_final.mov", path: "D:\\Archive\\Videos\\Clips\\interview_final.mov", size: 2.6 * 1024 * 1024 * 1024, type: "file", ext: ".mov" },
-                { name: "drone_mountain.mp4", path: "D:\\Archive\\Videos\\Clips\\drone_mountain.mp4", size: 2.4 * 1024 * 1024 * 1024, type: "file", ext: ".mp4" },
-                { name: "meeting_capture.mkv", path: "D:\\Archive\\Videos\\Clips\\meeting_capture.mkv", size: 980 * 1024 * 1024, type: "file", ext: ".mkv" }
-              ]
-            }
-          ]
-        },
-        {
-          name: "Projects",
-          path: "D:\\Archive\\Projects",
-          type: "folder",
-          size: 64 * 1024 * 1024 * 1024,
-          children: [
-            { name: "Project_Final.zip", path: "D:\\Archive\\Projects\\Project_Final.zip", size: 6.1 * 1024 * 1024 * 1024, type: "file", ext: ".zip" },
-            { name: "Build_Assets", path: "D:\\Archive\\Projects\\Build_Assets", size: 14.2 * 1024 * 1024 * 1024, type: "folder" },
-            { name: "Source_Code", path: "D:\\Archive\\Projects\\Source_Code", size: 8.5 * 1024 * 1024 * 1024, type: "folder" }
-          ]
-        },
-        {
-          name: "Photos",
-          path: "D:\\Archive\\Photos",
-          type: "folder",
-          size: 40 * 1024 * 1024 * 1024,
-          children: [
-            { name: "RAW_2024", path: "D:\\Archive\\Photos\\RAW_2024", size: 28 * 1024 * 1024 * 1024, type: "folder" },
-            { name: "Exported_JPEG", path: "D:\\Archive\\Photos\\Exported_JPEG", size: 12 * 1024 * 1024 * 1024, type: "folder" }
-          ]
-        },
-        {
-          name: "Documents",
-          path: "D:\\Archive\\Documents",
-          type: "folder",
-          size: 12 * 1024 * 1024 * 1024,
-          children: [
-            { name: "Financials.xlsx", path: "D:\\Archive\\Documents\\Financials.xlsx", size: 150 * 1024 * 1024, type: "file", ext: ".xlsx" },
-            { name: "Architecture_Specs.pdf", path: "D:\\Archive\\Documents\\Architecture_Specs.pdf", size: 450 * 1024 * 1024, type: "file", ext: ".pdf" }
-          ]
-        },
-        {
-          name: "Other",
-          path: "D:\\Archive\\Other",
-          type: "folder",
-          size: 4 * 1024 * 1024 * 1024,
-          children: [
-            { name: "Cache.tmp", path: "D:\\Archive\\Other\\Cache.tmp", size: 2.1 * 1024 * 1024 * 1024, type: "file", ext: ".tmp" }
-          ]
-        }
-      ]
-    };
-
-    this.setData(mock);
   }
 
   // --- UTILS ---

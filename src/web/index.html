@@ -37,10 +37,9 @@
 
       <div class="path-input-group">
         <select id="drive-select" class="drive-select" title="Quick drive selector">
-          <option value="D:\Archive">D:\</option>
-          <option value="C:\">C:\</option>
+          <option value="" disabled selected>Drive…</option>
         </select>
-        <input type="text" id="path-input" class="path-input" value="D:\Archive" placeholder="Enter folder or drive path...">
+        <input type="text" id="path-input" class="path-input" placeholder="Enter folder or drive path...">
         <button class="icon-btn" id="browse-btn" title="Browse for folder">📁</button>
       </div>
 
@@ -68,20 +67,20 @@
     <div class="stats-left">
       <div class="stat-chip">
         <span>📁</span>
-        <strong id="ribbon-path">D:\Archive</strong>
+        <strong id="ribbon-path">—</strong>
       </div>
       <div class="stat-chip">
         <span>Total:</span>
-        <strong id="stat-total-size">240 GB</strong>
+        <strong id="stat-total-size">—</strong>
       </div>
       <div class="stat-chip">
-        <span id="stat-file-count">18,420 files</span>
+        <span id="stat-file-count">—</span>
       </div>
       <div class="stat-chip">
-        <span id="stat-folder-count">842 folders</span>
+        <span id="stat-folder-count">—</span>
       </div>
       <div class="stat-chip">
-        <span id="stat-scan-time" style="color:var(--text-dim);">Scanned: Today</span>
+        <span id="stat-scan-time" style="color:var(--text-dim);">Not scanned yet</span>
       </div>
     </div>
 
@@ -187,18 +186,18 @@
         <div class="summary-header">
           <div class="summary-title">
             <span id="summary-icon">📁</span>
-            <span id="summary-name">Archive</span>
+            <span id="summary-name">Nothing selected</span>
           </div>
-          <div class="summary-size" id="summary-size">240 GB</div>
+          <div class="summary-size" id="summary-size">—</div>
         </div>
 
         <div class="summary-meta-row">
-          <span id="summary-percent" style="font-weight:600; color:var(--accent-cyan);">100% of total</span>
-          <span id="summary-items-count">18,420 files, 842 folders</span>
+          <span id="summary-percent" style="font-weight:600; color:var(--accent-cyan);">—</span>
+          <span id="summary-items-count">—</span>
         </div>
 
         <div class="size-progress-bg">
-          <div class="size-progress-fill" id="size-bar-fill" style="width: 100%;"></div>
+          <div class="size-progress-fill" id="size-bar-fill" style="width: 0%;"></div>
         </div>
       </div>
 
@@ -222,19 +221,19 @@
       <div class="details-footer">
         <div class="detail-row">
           <span>Type:</span>
-          <span id="detail-type">File folder</span>
+          <span id="detail-type">—</span>
         </div>
         <div class="detail-row">
           <span>Path:</span>
-          <span id="detail-path" style="max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">D:\Archive</span>
+          <span id="detail-path" style="max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">—</span>
         </div>
         <div class="detail-row">
           <span>Size:</span>
-          <span id="detail-bytes">240 GB (257,698,037,760 bytes)</span>
+          <span id="detail-bytes">—</span>
         </div>
         <div class="detail-row">
           <span>Contains:</span>
-          <span id="detail-contains">18,420 files, 842 folders</span>
+          <span id="detail-contains">—</span>
         </div>
         <div style="margin-top: 6px;">
           <button class="btn-secondary" id="btn-open-explorer" style="width:100%; justify-content:center; height:30px; font-size:0.75rem;">
