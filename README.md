@@ -117,6 +117,35 @@ Without a signing identity it falls back to ad-hoc signing for local dev builds.
 
 ---
 
+## 🚀 Releasing a New Version
+Releases are fully automated via GitHub Actions (`.github/workflows/release.yml`):
+
+```bash
+# 1. Bump src/version.py (the single version source of truth)
+# 2. Commit, then tag with the exact same version
+git tag v2.0.0
+git push origin main v2.0.0
+```
+
+The pipeline runs the pytest suite, verifies the tag matches `src/version.py`, builds on Windows/macOS/Linux runners, signs and notarizes when the secrets below are configured, and publishes a GitHub release with the `DiskAtlas_Setup_<version>.exe` installer, `DiskAtlas_macOS_<version>.dmg`, and `DiskAtlas_linux_<version>.tar.gz` attached. Tags containing `alpha`/`beta`/`rc` are published as pre-releases.
+
+Configure these repository secrets once (Settings > Secrets and variables > Actions):
+
+| Secret | Purpose |
+|---|---|
+| `WINDOWS_CERT_PFX` | base64-encoded OV/EV code-signing certificate |
+| `WINDOWS_CERT_PFX_PASSWORD` | certificate password |
+| `MACOS_CERT_P12` | base64-encoded Developer ID Application certificate |
+| `MACOS_CERT_PASSWORD` | certificate password |
+| `MACOS_SIGN_IDENTITY` | e.g. `Developer ID Application: Meruva LLC (TEAMID)` |
+| `DISK_ATLAS_NOTARY_KEY_ID` | App Store Connect API key ID |
+| `DISK_ATLAS_NOTARY_ISSUER_ID` | API issuer ID |
+| `DISK_ATLAS_NOTARY_KEY_P8` | base64-encoded `AuthKey_*.p8` contents |
+
+Until those exist, the same workflow still runs end-to-end and produces unsigned/dev artifacts. Every push to `main` and every pull request runs the test suite via `.github/workflows/ci.yml`.
+
+---
+
 ## 🌟 Visualization Modes
 1. **3D Storage City**: Folders and files rendered as interactive city blocks and skyscrapers scaled by size.
 2. **Folder Layers**: Tiered vertical hierarchy displaying nested directories with elevation and depth.

@@ -1,0 +1,243 @@
+# Disk Atlas — Release Pipeline
+#
+# Triggered by pushing a version tag (v2.0.0) or manually via the
+# Actions tab. Runs the test suite, verifies the tag matches
+# src/version.py, builds on all three desktop platforms (signed when
+# certificates are configured as secrets), and publishes a GitHub
+# release with the artifacts on tag pushes.
+#
+# Required GitHub secrets (see packaging/SIGNING.md and
+# packaging/NOTARIZATION.md); builds run UNSIGNED while these are unset:
+#   WINDOWS_CERT_PFX              base64-encoded code-signing .pfx
+#   WINDOWS_CERT_PFX_PASSWORD     .pfx password
+#   MACOS_CERT_P12                base64-encoded Developer ID .p12
+#   MACOS_CERT_PASSWORD           .p12 password
+#   MACOS_SIGN_IDENTITY           e.g. "Developer ID Application: Meruva LLC (TEAMID)"
+#   DISK_ATLAS_NOTARY_KEY_ID      App Store Connect API key ID
+#   DISK_ATLAS_NOTARY_ISSUER_ID   API issuer ID
+#   DISK_ATLAS_NOTARY_KEY_P8      base64-encoded AuthKey_*.p8 contents
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    name: Tests + version check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run tests
+        run: python -m pytest tests/ -q
+
+      - name: Verify tag matches src/version.py
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          SRC_VERSION=$(python3 -c "
+          ns = {}
+          exec(open('src/version.py', encoding='utf-8').read(), ns)
+          print(ns['__version__'])")
+          echo "tag=$TAG_VERSION src=$SRC_VERSION"
+          [ "$TAG_VERSION" = "$SRC_VERSION" ] || {
+            echo "::error::Tag v$TAG_VERSION does not match src/version.py ($SRC_VERSION)"
+            exit 1
+          }
+
+  build-windows:
+    name: Windows installer
+    needs: validate
+    runs-on: windows-latest
+    env:
+      HAS_WIN_CERT: ${{ secrets.WINDOWS_CERT_PFX != '' }}
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install Inno Setup 6
+        run: choco install innosetup --no-progress -y
+
+      - name: Record version
+        id: meta
+        shell: pwsh
+        run: |
+          $v = python -c "ns = {}; exec(open('src/version.py', encoding='utf-8').read(), ns); print(ns['__version__'])"
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Decode signing certificate
+        if: env.HAS_WIN_CERT == 'true'
+        shell: pwsh
+        env:
+          WINDOWS_CERT_PFX: ${{ secrets.WINDOWS_CERT_PFX }}
+        run: |
+          [IO.File]::WriteAllBytes("$env:RUNNER_TEMP\codesign.pfx", [Convert]::FromBase64String($env:WINDOWS_CERT_PFX))
+          "DISK_ATLAS_SIGN_PFX=$env:RUNNER_TEMP\codesign.pfx" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build + sign installer
+        if: env.HAS_WIN_CERT == 'true'
+        env:
+          DISK_ATLAS_SIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_CERT_PFX_PASSWORD }}
+        run: python packaging/build_windows.py --require-sign
+
+      - name: Build installer (unsigned)
+        if: env.HAS_WIN_CERT != 'true'
+        run: python packaging/build_windows.py
+
+      - name: Verify Authenticode signature
+        if: env.HAS_WIN_CERT == 'true'
+        shell: pwsh
+        run: signtool verify /pa /v "dist\DiskAtlas_Setup_${{ steps.meta.outputs.version }}.exe"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: disk-atlas-windows
+          path: dist/DiskAtlas_Setup_*.exe
+          if-no-files-found: error
+
+  build-macos:
+    name: macOS DMG
+    needs: validate
+    runs-on: macos-latest
+    env:
+      HAS_MAC_CERT: ${{ secrets.MACOS_CERT_P12 != '' }}
+      HAS_NOTARY: ${{ secrets.DISK_ATLAS_NOTARY_KEY_ID != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Import Developer ID certificate
+        if: env.HAS_MAC_CERT == 'true'
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 32)"
+          echo "KEYCHAIN_PASSWORD=$KEYCHAIN_PASSWORD" >> "$GITHUB_ENV"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          echo "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k build.keychain \
+              -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" build.keychain
+
+      - name: Configure signing + notarization env
+        if: env.HAS_MAC_CERT == 'true'
+        env:
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          NOTARY_KEY_P8: ${{ secrets.DISK_ATLAS_NOTARY_KEY_P8 }}
+          DISK_ATLAS_NOTARY_KEY_ID: ${{ secrets.DISK_ATLAS_NOTARY_KEY_ID }}
+          DISK_ATLAS_NOTARY_ISSUER_ID: ${{ secrets.DISK_ATLAS_NOTARY_ISSUER_ID }}
+          HAS_NOTARY: ${{ secrets.DISK_ATLAS_NOTARY_KEY_ID != '' }}
+        run: |
+          echo "DISK_ATLAS_MAC_SIGN_IDENTITY=$MACOS_SIGN_IDENTITY" >> "$GITHUB_ENV"
+          FLAG="--require-sign"
+          if [ "$HAS_NOTARY" = "true" ]; then
+            KEY_PATH="$RUNNER_TEMP/AuthKey_$DISK_ATLAS_NOTARY_KEY_ID.p8"
+            echo "$NOTARY_KEY_P8" | base64 --decode > "$KEY_PATH"
+            echo "DISK_ATLAS_NOTARY_KEY_PATH=$KEY_PATH" >> "$GITHUB_ENV"
+            echo "DISK_ATLAS_NOTARY_KEY_ID=$DISK_ATLAS_NOTARY_KEY_ID" >> "$GITHUB_ENV"
+            echo "DISK_ATLAS_NOTARY_ISSUER_ID=$DISK_ATLAS_NOTARY_ISSUER_ID" >> "$GITHUB_ENV"
+          else
+            FLAG="--require-sign --skip-notarize"
+            echo "::warning::Notary API secrets unset — the DMG will be signed but NOT notarized"
+          fi
+          echo "BUILD_FLAGS=$FLAG" >> "$GITHUB_ENV"
+
+      - name: Build + notarize DMG
+        run: ./packaging/build_macos.sh ${{ env.BUILD_FLAGS }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: disk-atlas-macos
+          path: dist/DiskAtlas_macOS_*.dmg
+          if-no-files-found: error
+
+  build-linux:
+    name: Linux tarball
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Build PyInstaller distribution
+        run: python -m PyInstaller --noconfirm --distpath dist --workpath build packaging/DiskAtlas.spec
+
+      - name: Package tarball
+        run: |
+          VERSION=$(python3 -c "
+          ns = {}
+          exec(open('src/version.py', encoding='utf-8').read(), ns)
+          print(ns['__version__'])")
+          tar -czf "dist/DiskAtlas_linux_${VERSION}.tar.gz" -C dist DiskAtlas
+          ls -lh dist/*.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: disk-atlas-linux
+          path: dist/DiskAtlas_linux_*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    name: GitHub release
+    needs: [build-windows, build-macos, build-linux]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: disk-atlas-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, 'rc') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') }}
+          fail_on_unmatched_files: true
