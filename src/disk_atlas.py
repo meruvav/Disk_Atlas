@@ -40,8 +40,83 @@ else:
     WEB_DIR = BASE_DIR / "web"
 
 # --- DRIVE DETECTION UTILITIES ---
+# Filesystems that never represent user storage devices.
+_PSEUDO_FSTYPES = {
+    "proc", "sysfs", "devtmpfs", "devpts", "tmpfs", "cgroup", "cgroup2",
+    "overlay", "squashfs", "aufs", "configfs", "debugfs", "tracefs",
+    "securityfs", "pstore", "bpf", "efivarfs", "mqueue", "hugetlbfs",
+    "rpc_pipefs", "fusectl", "binfmt_misc", "autofs", "nsfs", "ramfs",
+    "selinuxfs", "smackfs", "fd", "ptmx",
+}
+# Network mounts can hang on stat() when the remote end is unreachable,
+# so they are never auto-listed (users can still type their path manually).
+_NETWORK_FSTYPES = {
+    "nfs", "nfs4", "cifs", "smbfs", "smb3", "sshfs", "fuse.sshfs",
+    "davfs", "ceph", "glusterfs", "fuse.davfs2",
+}
+
+
+def _unescape_mount_field(value):
+    """Decode octal escapes used in /proc/self/mounts (space, tab, newline, backslash)."""
+    return (value
+            .replace("\\040", " ")
+            .replace("\\011", "\t")
+            .replace("\\012", "\n")
+            .replace("\\134", "\\"))
+
+
+def _parse_proc_mounts(text):
+    """Parse /proc/self/mounts content into [(device, mountpoint, fstype), ...]
+    containing only real local block-device mounts."""
+    mounts = []
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        device, mnt, fstype = parts[0], parts[1], parts[2]
+        if fstype in _PSEUDO_FSTYPES or fstype in _NETWORK_FSTYPES:
+            continue
+        if not device.startswith("/dev/"):
+            continue
+        if device.startswith("/dev/loop"):  # snap/loop images
+            continue
+        mounts.append((device, _unescape_mount_field(mnt), fstype))
+    return mounts
+
+
 def list_system_drives():
+    """List user storage devices with capacity info: [{path, total, free, used}, ...]."""
     drives = []
+    seen_devices = set()
+    seen_paths = set()
+
+    def add_mount(path, device=None):
+        if device and device in seen_devices:
+            return
+        try:
+            key = os.path.realpath(path)
+        except OSError:
+            key = path
+        if key in seen_paths:
+            # Path already listed (e.g. "/" added explicitly) — still record
+            # the device so other mountpoints of the same disk are deduped.
+            if device:
+                seen_devices.add(device)
+            return
+        try:
+            usage = shutil.disk_usage(path)
+        except (PermissionError, OSError):
+            return
+        seen_paths.add(key)
+        if device:
+            seen_devices.add(device)
+        drives.append({
+            "path": path,
+            "total": usage.total,
+            "free": usage.free,
+            "used": usage.used,
+        })
+
     if sys.platform == 'win32':
         if hasattr(os, 'listdrives'):
             drive_letters = os.listdrives()
@@ -60,9 +135,50 @@ def list_system_drives():
                 })
             except (PermissionError, OSError):
                 drives.append({"path": d, "total": 0, "free": 0, "used": 0})
+        return drives
+
+    # --- POSIX: always include the root filesystem ---
+    add_mount("/")
+
+    if sys.platform == 'darwin':
+        # macOS: every mounted volume appears under /Volumes
+        try:
+            for name in sorted(os.listdir("/Volumes")):
+                p = os.path.join("/Volumes", name)
+                if os.path.isdir(p) and os.path.ismount(p):
+                    add_mount(p)
+        except OSError:
+            pass
+        return drives
+
+    # --- Linux/other POSIX ---
+    mounts = None
+    try:
+        with open("/proc/self/mounts", "r", encoding="utf-8", errors="replace") as f:
+            mounts = _parse_proc_mounts(f.read())
+    except OSError:
+        mounts = None
+
+    if mounts is not None:
+        for device, mnt, _fstype in mounts:
+            add_mount(mnt, device=device)
     else:
-        usage = shutil.disk_usage("/")
-        drives.append({"path": "/", "total": usage.total, "free": usage.free, "used": usage.used})
+        # Fallback when /proc is unavailable (BSD, minimal containers):
+        # scan the conventional hotplug mount directories.
+        candidates = ["/media", "/mnt", "/run/media"]
+        user = os.environ.get("USER", "")
+        if user:
+            candidates.insert(0, os.path.join("/run/media", user))
+            candidates.insert(0, os.path.join("/media", user))
+        for base in candidates:
+            try:
+                for name in sorted(os.listdir(base)):
+                    p = os.path.join(base, name)
+                    if os.path.isdir(p) and os.path.ismount(p):
+                        add_mount(p)
+            except OSError:
+                continue
+
     return drives
 
 # --- HIGH-PERFORMANCE ITERATIVE SCANNER ---
