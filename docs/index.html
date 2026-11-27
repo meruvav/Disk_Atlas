@@ -66,11 +66,19 @@
       transition: filter 0.15s ease;
     }
     .card button:hover { filter: brightness(1.12); }
-    .card button:disabled { background: var(--border); color: var(--text-dim); cursor: default; }
     .card .meta { font-size: 0.7rem; color: var(--text-dim); min-height: 1em; }
     .card.win button { background: var(--cyan); }
     .card.mac button { background: var(--amber); }
     .card.linux button { background: var(--coral); }
+    /* Disabled state must override the platform accent backgrounds */
+    .card button:disabled,
+    .card.win button:disabled,
+    .card.mac button:disabled,
+    .card.linux button:disabled {
+      background: #2a3144;
+      color: #c3ccdc;
+      cursor: not-allowed;
+    }
 
     .features {
       margin-top: 44px;
@@ -185,6 +193,13 @@
     try {
       const res = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`,
         { headers: { Accept: 'application/vnd.github+json' } });
+      if (res.status === 404) {
+        // Repo is reachable but hasn't published a release yet
+        document.getElementById('version-note').innerHTML =
+          'Latest release: <strong>coming soon</strong>';
+        status.textContent = "The first release hasn't been published yet — check back shortly.";
+        return;
+      }
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const rel = await res.json();
 
