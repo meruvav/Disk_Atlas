@@ -13,7 +13,7 @@ class DiskAtlasApp {
     this.breadcrumbTrail = [];
     this.theme = 'dark';
     this.activeScope = 'folder'; // 'folder', 'drive' ('all' is not implemented yet)
-    this.viewMode = 'city'; // 'city', 'layers', 'terrain', 'list'
+    this.viewMode = 'city'; // 'city', 'layers', 'treemap', 'terrain', 'list'
     this.activeTab = 'contents'; // 'contents', 'hierarchy', 'largest', 'insights'
     this.isScanning = false;
     this.scanPollTimer = null;
@@ -388,6 +388,15 @@ class DiskAtlasApp {
       canvasContainer.style.display = 'block';
       listViewContainer.style.display = 'none';
       this.vis.setMode('layers');
+    } else if (mode === 'treemap') {
+      modeTitle.innerText = "E / Storage Treemap";
+      modeSubtitle.innerText = "Proportional map of the folder — the largest block is the largest file. Double-click a folder to zoom in.";
+      subControlsLayers.style.display = 'none';
+      depthHud.style.display = 'none';
+      canvasContainer.style.display = 'block';
+      listViewContainer.style.display = 'none';
+      this.vis.setMode('treemap');
+      this.vis.setCameraView('top');
     } else if (mode === 'terrain') {
       modeTitle.innerText = "D / Storage Terrain";
       modeSubtitle.innerText = "Voxel topographical landscape. Mountain peaks represent high-density storage.";

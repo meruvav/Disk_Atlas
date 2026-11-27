@@ -332,6 +332,15 @@ class DiskAtlasVisualizer {
       this.visualGroup.remove(obj);
       if (obj.geometry) obj.geometry.dispose();
     }
+
+    // Dispose per-render label textures (treemap mode) to avoid GPU leaks
+    if (this._labelTextures) {
+      for (const entry of this._labelTextures) {
+        entry.texture.dispose();
+        if (entry.material) entry.material.dispose();
+      }
+      this._labelTextures = [];
+    }
   }
 
   renderCurrentView() {
@@ -344,6 +353,8 @@ class DiskAtlasVisualizer {
       this.renderFolderLayers(this.currentNode);
     } else if (this.currentMode === 'terrain') {
       this.renderStorageTerrain(this.currentNode);
+    } else if (this.currentMode === 'treemap') {
+      this.renderTreemap(this.currentNode);
     }
   }
 
@@ -671,6 +682,160 @@ class DiskAtlasVisualizer {
     for (let i = 0; i < node.children.length; i++) {
       this.harvestToDepth(node.children[i], outList, currentDepth + 1, maxDepth);
     }
+  }
+
+  // ==========================================
+  // CONCEPT E: STORAGE TREEMAP
+  // Flat proportional 2.5D map. Folders get a bordered container with
+  // their children tiled inside; files are direct tiles. Color follows
+  // the same size legend as the other modes (cyan < 100 MB, amber
+  // < 1 GB, coral >= 1 GB). Hover = tooltip, click = inspect,
+  // double-click a folder = drill down (handled by shared handlers).
+  // ==========================================
+  _getTreemapMat(hex) {
+    if (!this._treemapMats) this._treemapMats = new Map();
+    const key = `${this.options.theme}:${hex}`;
+    if (!this._treemapMats.has(key)) {
+      this._treemapMats.set(key, new THREE.MeshLambertMaterial({
+        color: hex,
+        emissive: 0x000000,
+      }));
+    }
+    return this._treemapMats.get(key);
+  }
+
+  _shade(hex, factor) {
+    const c = new THREE.Color(hex);
+    c.multiplyScalar(factor);
+    return c.getHex();
+  }
+
+  _makeTextLabel(text, tileW, tileH, colorHex) {
+    // Canvas-texture plane laid flat on top of a tile.
+    const fontPx = 40;
+    const padding = 24;
+    const measure = document.createElement('canvas').getContext('2d');
+    measure.font = `600 ${fontPx}px "Segoe UI", system-ui, sans-serif`;
+    let label = text || '';
+    let textW = measure.measureText(label).width;
+    const maxW = 768;
+    while (label.length > 1 && textW > maxW - padding) {
+      label = label.slice(0, -1);
+      textW = measure.measureText(label + '…').width;
+    }
+    if (label.length < text.length) label += '…';
+
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(2, Math.ceil(textW + padding));
+    canvas.height = 64;
+    const ctx = canvas.getContext('2d');
+    ctx.font = `600 ${fontPx}px "Segoe UI", system-ui, sans-serif`;
+    ctx.fillStyle = colorHex;
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, padding / 2, canvas.height / 2);
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.minFilter = THREE.LinearFilter;
+    const material = new THREE.MeshBasicMaterial({
+      map: texture, transparent: true, depthWrite: false,
+    });
+    if (!this._labelTextures) this._labelTextures = [];
+    this._labelTextures.push({ texture, material });
+
+    // Fit the plane inside the tile: target max 22% of tile height,
+    // never wider than the tile.
+    const aspect = canvas.width / canvas.height;
+    const targetH = Math.max(1.2, Math.min(tileH - 0.8, tileH * 0.22));
+    let planeH = targetH;
+    let planeW = planeH * aspect;
+    if (planeW > tileW - 1) {
+      planeW = tileW - 1;
+      planeH = planeW / aspect;
+    }
+    const geo = new THREE.PlaneGeometry(planeW, planeH);
+    return new THREE.Mesh(geo, material);
+  }
+
+  renderTreemap(root) {
+    const isLight = this.options.theme === 'light';
+    const children = [...(root.children || [])].sort((a, b) => (b.size || 0) - (a.size || 0));
+    if (children.length === 0) return;
+
+    const W = 112, D = 76, OX = -W / 2, OZ = -D / 2, GAP = 0.45;
+    const boxes = this.layoutTreemap(children, OX, OZ, W, D);
+    const labelColor = isLight ? '#101826' : '#e7ecf3';
+
+    boxes.forEach(b => {
+      const node = b.node;
+      const tw = b.w - GAP, td = b.h - GAP;
+      const cx = b.x + b.w / 2;
+      const cz = b.y + b.h / 2;
+      const isFolder = node.type === 'folder';
+      const kids = isFolder ? [...(node.children || [])].sort((a, x) => (x.size || 0) - (a.size || 0)) : [];
+      const showKids = isFolder && kids.length > 0 && tw > 8 && td > 8;
+
+      if (showKids) {
+        // Folder = bordered container; its children are the visible tiles.
+        const frameH = 1.1;
+        const frame = new THREE.Mesh(
+          new THREE.BoxGeometry(tw, frameH, td),
+          this._getTreemapMat(this._shade(this.getSizeColor(node.size, isLight), 0.45))
+        );
+        frame.position.set(cx, frameH / 2, cz);
+        frame.userData = { node };
+        this.visualGroup.add(frame);
+        this.interactiveObjects.push(frame);
+
+        const offset = 0.55; // header strip where the label sits
+        const innerBoxes = this.layoutTreemap(
+          kids, b.x + offset + GAP / 2, b.y + offset + GAP / 2,
+          b.w - 2 * offset - GAP, b.h - 2 * offset - GAP
+        );
+        innerBoxes.forEach(ib => {
+          const inode = ib.node;
+          const iw = Math.max(0.2, ib.w - GAP * 0.5);
+          const id = Math.max(0.2, ib.h - GAP * 0.5);
+          const ih = inode.type === 'folder' ? 1.9 : 1.5;
+          const tile = new THREE.Mesh(
+            new THREE.BoxGeometry(iw, ih, id),
+            this._getTreemapMat(this.getSizeColor(inode.size, isLight))
+          );
+          tile.position.set(ib.x + ib.w / 2, ih / 2 + frameH * 0.9, ib.y + ib.h / 2);
+          tile.userData = { node: inode };
+          this.visualGroup.add(tile);
+          this.interactiveObjects.push(tile);
+        });
+
+        // Header label floats above everything in this container
+        this._addTreemapLabel(node, b.x + offset + GAP, b.y + offset + GAP,
+          b.w - 2 * offset, b.h - 2 * offset, frameH * 0.9 + 1.9 + 0.08, labelColor, true);
+      } else {
+        const th = node.type === 'folder' ? 1.8 : 1.4;
+        const tile = new THREE.Mesh(
+          new THREE.BoxGeometry(tw, th, td),
+          this._getTreemapMat(this.getSizeColor(node.size, isLight))
+        );
+        tile.position.set(cx, th / 2, cz);
+        tile.userData = { node };
+        this.visualGroup.add(tile);
+        this.interactiveObjects.push(tile);
+
+        if (tw > 7 && td > 4) {
+          this._addTreemapLabel(node, b.x + GAP, b.y + GAP, tw, td, th + 0.06, labelColor, false);
+        }
+      }
+    });
+  }
+
+  _addTreemapLabel(node, x, y, w, h, baseH, labelColor, isHeader) {
+    if (w < 5 || h < 3.2) return;
+    const text = isHeader
+      ? `📁 ${node.name} · ${this.formatBytes(node.size)}`
+      : `${node.type === 'folder' ? '📁' : '📄'} ${node.name}`;
+    const mesh = this._makeTextLabel(text, w, h, labelColor);
+    mesh.rotation.x = -Math.PI / 2;
+    mesh.position.set(x + w / 2, baseH + 0.06, y + h / 2);
+    this.visualGroup.add(mesh);
   }
 
   // --- SQUARIFIED TREEMAP 2D PACKING HELPER ---

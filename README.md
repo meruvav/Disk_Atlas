@@ -162,7 +162,9 @@ A static download page lives in `docs/` (`docs/index.html`). To publish it, enab
 ## 🌟 Visualization Modes
 1. **3D Storage City**: Folders and files rendered as interactive city blocks and skyscrapers scaled by size.
 2. **Folder Layers**: Tiered vertical hierarchy displaying nested directories with elevation and depth.
-3. **Storage Terrain**: Topographic heat-map representation of storage distribution across your disk.
+3. **Storage Treemap**: Proportional flat map — the largest block is the largest file; nested borders show folder structure. Double-click any folder to zoom in.
+4. **Storage Terrain**: Topographic heat-map representation of storage distribution across your disk.
+5. **Storage Explorer**: Tabular list view with search, sorting, and file attributes.
 
 ---
 
