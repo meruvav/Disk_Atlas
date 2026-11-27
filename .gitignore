@@ -41,6 +41,7 @@ env/
 *.dmg
 *.html
 !src/web/*.html
+!docs/*.html
 
 # Code-signing secrets — NEVER commit certificates or keys
 *.pfx

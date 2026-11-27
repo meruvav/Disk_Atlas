@@ -56,6 +56,12 @@ def user_data_dir():
 
 
 log = logging.getLogger("disk_atlas")
+
+# Single version source of truth (src/version.py), resolved once at import.
+try:
+    from version import __version__ as _APP_VERSION
+except ImportError:
+    _APP_VERSION = "unknown"
 _logging_ready = False
 
 
@@ -632,6 +638,11 @@ class DiskAtlasRequestHandler(SimpleHTTPRequestHandler):
         if path == "/api/drives":
             drives = list_system_drives()
             self._send_json(drives)
+        elif path == "/api/version":
+            self._send_json({
+                "app": "Disk Atlas",
+                "version": _APP_VERSION,
+            })
         elif self.path == "/api/status":
             self._send_json({
                 "state": scanner_instance.state,
@@ -860,12 +871,8 @@ def create_server(port=0):
     server = ThreadedHTTPServer(("127.0.0.1", port), DiskAtlasRequestHandler)
     server.auth_token = secrets.token_urlsafe(32)
     actual_port = server.server_address[1]
-    try:
-        from version import __version__
-    except ImportError:
-        __version__ = "unknown"
     log.info("Disk Atlas v%s engine started on http://127.0.0.1:%d (pid %d)",
-             __version__, actual_port, os.getpid())
+             _APP_VERSION, actual_port, os.getpid())
     return server, actual_port
 
 

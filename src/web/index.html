@@ -54,8 +54,11 @@
       </button>
     </div>
 
-    <!-- HEADER ACTIONS (THEME TOGGLE) -->
+    <!-- HEADER ACTIONS (ABOUT + THEME TOGGLE) -->
     <div class="header-actions">
+      <button class="btn-secondary" id="about-btn" style="padding: 0 10px;" title="About Disk Atlas and check for updates">
+        ℹ About
+      </button>
       <button class="btn-secondary" id="theme-toggle-btn" style="padding: 0 10px;">
         🌙 Dark
       </button>
@@ -256,6 +259,37 @@
         Cancel Scan
       </button>
     </div>
+  </div>
+
+  <!-- ABOUT / UPDATE MODAL -->
+  <div id="about-modal">
+    <div class="modal-card about-card">
+      <div class="brand-icon about-icon">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
+          <polyline points="2 17 12 22 22 17"></polyline>
+          <polyline points="2 12 12 17 22 12"></polyline>
+        </svg>
+      </div>
+      <div class="about-title">Disk Atlas</div>
+      <div class="about-version" id="about-app-version">v—</div>
+      <div class="about-subtitle">Visualize your storage. Explore. Understand. Export.</div>
+      <button class="btn-secondary" id="check-updates-btn" style="margin: 0 auto;">
+        Check for Updates
+      </button>
+      <div class="update-status" id="update-status"></div>
+      <button class="btn-secondary" id="about-close-btn" style="margin: 0 auto;">
+        Close
+      </button>
+    </div>
+  </div>
+
+  <!-- UPDATE AVAILABLE BANNER -->
+  <div id="update-banner" class="update-banner" hidden>
+    <span class="update-banner-icon">⬆</span>
+    <span id="update-banner-text">A new version of Disk Atlas is available.</span>
+    <a id="update-download-link" class="update-banner-link" href="#" target="_blank" rel="noopener noreferrer">Download</a>
+    <button id="update-banner-dismiss" class="update-banner-dismiss" title="Dismiss">✕</button>
   </div>
 
   <!-- SCRIPTS -->

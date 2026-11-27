@@ -6,6 +6,12 @@
 
 ---
 
+## 📥 Download
+
+Get the latest desktop build for Windows, macOS, or Linux from the **[download page](https://meruvav.github.io/Disk_Atlas/)** or browse all releases on the **[releases page](https://github.com/meruvav/Disk_Atlas/releases)**. The app checks for new versions automatically (About → Check for Updates).
+
+---
+
 ## 🚀 Quick Start
 
 ### Prerequisites
@@ -55,6 +61,10 @@ Disk_Atlas/
 │   ├── build_macos.sh            # macOS sign / DMG / notarize pipeline
 │   ├── macos_entitlements.plist  # Hardened-runtime entitlements
 │   └── NOTARIZATION.md           # macOS signing & notarization guide
+│
+├── docs/                         # Public download page (GitHub Pages)
+│   ├── index.html                # OS-aware release download page
+│   └── assets/                   # Page assets (app icon)
 │
 ├── run.py                        # Root launcher script (python run.py)
 ├── requirements.txt              # Build dependencies
@@ -143,6 +153,9 @@ Configure these repository secrets once (Settings > Secrets and variables > Acti
 | `DISK_ATLAS_NOTARY_KEY_P8` | base64-encoded `AuthKey_*.p8` contents |
 
 Until those exist, the same workflow still runs end-to-end and produces unsigned/dev artifacts. Every push to `main` and every pull request runs the test suite via `.github/workflows/ci.yml`.
+
+### Public download page
+A static download page lives in `docs/` (`docs/index.html`). To publish it, enable GitHub Pages once: **Settings > Pages > Source: Deploy from a branch > main > /docs**. It goes live at `https://meruvav.github.io/Disk_Atlas/`, detects the visitor's OS, and serves the newest release assets straight from the GitHub releases API — no rebuild needed on releases.
 
 ---
 

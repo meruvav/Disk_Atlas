@@ -17,7 +17,7 @@
 
 #define MyAppName "Disk Atlas"
 #define MyAppPublisher "Meruva"
-#define MyAppURL "https://github.com/vinaimeruva/Disk_Atlas"
+#define MyAppURL "https://github.com/meruvav/Disk_Atlas"
 #define MyAppExeName "DiskAtlas.exe"
 
 [Setup]

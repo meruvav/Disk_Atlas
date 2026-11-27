@@ -893,3 +893,123 @@ body.theme-light .items-table td {
   white-space: nowrap;
   margin-bottom: 16px;
 }
+
+/* ABOUT / UPDATE MODAL */
+#about-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(10, 13, 20, 0.85);
+  backdrop-filter: blur(12px);
+  z-index: 1100;
+  display: none;
+  align-items: center;
+  justify-content: center;
+}
+
+#about-modal.open {
+  display: flex;
+}
+
+.about-card {
+  width: 380px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: center;
+}
+
+.about-icon {
+  width: 52px;
+  height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 14px;
+  color: var(--accent-cyan);
+}
+
+.about-title {
+  font-size: 1.2rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.about-version {
+  font-size: 0.85rem;
+  color: var(--accent-cyan);
+  font-weight: 600;
+}
+
+.about-subtitle {
+  font-size: 0.74rem;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+
+.update-status {
+  min-height: 16px;
+  font-size: 0.74rem;
+  color: var(--text-muted);
+}
+
+.update-status.update-ok {
+  color: var(--accent-cyan);
+}
+
+.update-status.update-new {
+  color: var(--accent-amber, #f59e0b);
+  font-weight: 600;
+}
+
+/* UPDATE AVAILABLE BANNER */
+.update-banner {
+  position: fixed;
+  left: 50%;
+  bottom: 20px;
+  transform: translateX(-50%);
+  z-index: 1050;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-light);
+  border-radius: 999px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
+  font-size: 0.78rem;
+  color: var(--text-main);
+  max-width: calc(100vw - 40px);
+}
+
+.update-banner[hidden] {
+  display: none;
+}
+
+.update-banner-icon {
+  color: var(--accent-cyan);
+  font-weight: 700;
+}
+
+.update-banner-link {
+  color: var(--accent-cyan);
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.update-banner-link:hover {
+  text-decoration: underline;
+}
+
+.update-banner-dismiss {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.8rem;
+  padding: 0 2px;
+}
+
+.update-banner-dismiss:hover {
+  color: var(--text-main);
+}

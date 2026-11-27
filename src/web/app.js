@@ -18,11 +18,13 @@ class DiskAtlasApp {
     this.isScanning = false;
     this.scanPollTimer = null;
     this.nodePathMap = new Map();
+    this.appVersion = null;
 
     this.initVisualizer();
     this.bindEvents();
     this.checkEmbeddedData();
     this.fetchDrives();
+    this.initVersionAndUpdates();
   }
 
   initVisualizer() {
@@ -153,6 +155,104 @@ class DiskAtlasApp {
 
     // Modal Cancel Scan
     document.getElementById('modal-cancel-btn')?.addEventListener('click', () => this.cancelScan());
+
+    // About / Update modal
+    const aboutModal = document.getElementById('about-modal');
+    document.getElementById('about-btn')?.addEventListener('click', () => {
+      aboutModal?.classList.add('open');
+    });
+    document.getElementById('about-close-btn')?.addEventListener('click', () => {
+      aboutModal?.classList.remove('open');
+    });
+    aboutModal?.addEventListener('click', (e) => {
+      if (e.target === aboutModal) aboutModal.classList.remove('open');
+    });
+    document.getElementById('check-updates-btn')?.addEventListener('click', () => this.checkForUpdates(true));
+    document.getElementById('update-banner-dismiss')?.addEventListener('click', () => {
+      document.getElementById('update-banner')?.setAttribute('hidden', '');
+    });
+  }
+
+  // --- VERSION + UPDATE CHECK ---
+  // Reported by the local engine (/api/version). Updates are discovered via
+  // the public GitHub releases API directly from the renderer — the local
+  // server stays hermetic and never makes outbound calls.
+  static UPDATE_REPO = 'meruvav/Disk_Atlas';
+
+  async initVersionAndUpdates() {
+    // Skip in exported standalone reports (no token, no engine).
+    if (!window.__DA_TOKEN__) return;
+    try {
+      const res = await this.apiFetch('/api/version');
+      if (!res.ok) return;
+      const data = await res.json();
+      this.appVersion = data.version;
+      const versionEl = document.getElementById('about-app-version');
+      if (versionEl) versionEl.textContent = `v${data.version}`;
+      this.checkForUpdates(false); // silent background check on startup
+    } catch (_) {
+      // Static/exported mode or engine unavailable — nothing to do.
+    }
+  }
+
+  static compareVersions(a, b) {
+    // Returns 1 when a > b, -1 when a < b, 0 when equal. "v" prefixes ignored.
+    const parse = (v) => String(v || '').replace(/^v/i, '').split(/[.-]/)
+      .map((p) => (p.match(/^\d+$/) ? parseInt(p, 10) : -1));
+    const va = parse(a), vb = parse(b);
+    const len = Math.max(va.length, vb.length);
+    for (let i = 0; i < len; i++) {
+      const x = i < va.length ? va[i] : 0;
+      const y = i < vb.length ? vb[i] : 0;
+      // A suffixed tag (rc/beta, parsed as -1) sorts before the plain version
+      if (x !== y) return x > y ? 1 : -1;
+    }
+    return 0;
+  }
+
+  async checkForUpdates(manual) {
+    const statusEl = document.getElementById('update-status');
+    const setStatus = (msg, cls = '') => {
+      if (statusEl) {
+        statusEl.textContent = msg;
+        statusEl.className = `update-status ${cls}`;
+      }
+    };
+
+    if (!this.appVersion) {
+      if (manual) setStatus('Version unknown — update check unavailable.');
+      return;
+    }
+
+    if (manual) setStatus('Checking for updates...');
+    try {
+      const res = await fetch(
+        `https://api.github.com/repos/${DiskAtlasApp.UPDATE_REPO}/releases/latest`,
+        { headers: { Accept: 'application/vnd.github+json' } }
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const latest = (data.tag_name || '').replace(/^v/i, '');
+
+      if (DiskAtlasApp.compareVersions(latest, this.appVersion) > 0) {
+        setStatus(`v${latest} is available — you're on v${this.appVersion}.`, 'update-new');
+        this.showUpdateBanner(latest, data.html_url);
+      } else if (manual) {
+        setStatus(`Up to date (v${this.appVersion}).`, 'update-ok');
+      }
+    } catch (_) {
+      if (manual) setStatus('Update check failed — offline or GitHub unreachable.');
+    }
+  }
+
+  showUpdateBanner(latest, url) {
+    const banner = document.getElementById('update-banner');
+    const text = document.getElementById('update-banner-text');
+    const link = document.getElementById('update-download-link');
+    if (!banner || !url) return;
+    if (text) text.textContent = `Disk Atlas v${latest} is available (you have v${this.appVersion}).`;
+    if (link) link.href = url;
+    banner.removeAttribute('hidden');
   }
 
   // --- CENTRALIZED API HELPER ---

@@ -51,6 +51,18 @@ class TestIndexAndDrives:
         assert drives[0]["kind"] == "home"
         assert any(d["kind"] == "drive" for d in drives)
 
+    def test_version_endpoint(self, server):
+        status, data, _ = server.get("/api/version")
+        assert status == 200
+        assert data["app"] == "Disk Atlas"
+        # From src/version.py — the release pipeline's single source of truth
+        from version import __version__
+        assert data["version"] == __version__
+
+    def test_version_endpoint_requires_auth(self, server):
+        status, _, _ = server.get("/api/version", token=None)
+        assert status == 401
+
     def test_exclusions_endpoint(self, server):
         status, rules, _ = server.get("/api/exclusions")
         assert status == 200
