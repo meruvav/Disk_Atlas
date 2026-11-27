@@ -52,6 +52,10 @@
         <span>📄</span>
         <span>Export HTML</span>
       </button>
+
+      <button class="btn-secondary btn-icon-only" id="history-btn" title="Scan history — reopen or compare past scans">
+        <span>🕘</span>
+      </button>
     </div>
 
     <!-- HEADER ACTIONS (ABOUT + THEME TOGGLE) -->
@@ -284,6 +288,17 @@
       <button class="btn-secondary" id="about-close-btn" style="margin: 0 auto;">
         Close
       </button>
+    </div>
+  </div>
+
+  <!-- SCAN HISTORY PANEL -->
+  <div id="history-panel" class="side-panel" hidden>
+    <div class="side-panel-header">
+      <span>🕘 Scan History</span>
+      <button id="history-close" class="update-banner-dismiss" title="Close">✕</button>
+    </div>
+    <div class="side-panel-body" id="history-list">
+      <div class="history-empty">No saved scans yet. Completed scans appear here automatically.</div>
     </div>
   </div>
 

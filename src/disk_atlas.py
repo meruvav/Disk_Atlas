@@ -57,6 +57,107 @@ def user_data_dir():
 
 log = logging.getLogger("disk_atlas")
 
+
+# --- SCAN HISTORY PERSISTENCE ---
+# Every completed deep scan is saved as a JSON snapshot under
+# user_data_dir()/history/<id>.json. IDs are time-ordered
+# (UTC timestamp + suffix), so a directory listing is already sorted.
+def history_dir():
+    """Per-user directory holding scan snapshots."""
+    d = user_data_dir() / "history"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _count_tree(node):
+    """Aggregate file/folder counts and total bytes from a scan tree."""
+    files = folders = 0
+    total = 0
+    stack = [node]
+    while stack:
+        n = stack.pop()
+        if n.get("type") == "folder":
+            folders += 1
+            stack.extend(n.get("children", []))
+        else:
+            files += 1
+            total += n.get("size", 0)
+    return files, folders, total
+
+
+def save_scan_history(root_path, tree, duration_s, excluded_count):
+    """Persist a completed scan snapshot. Returns the history id."""
+    from datetime import datetime, timezone
+    ts = datetime.now(timezone.utc)
+    history_id = ts.strftime("%Y%m%dT%H%M%S") + f"{ts.microsecond // 1000:03d}Z_{os.getpid()}"
+    files, folders, total = _count_tree(tree)
+    snapshot = {
+        "id": history_id,
+        "timestamp": ts.isoformat(),
+        "root_path": root_path,
+        "name": tree.get("name", root_path),
+        "duration_s": round(duration_s, 2),
+        "file_count": files,
+        "folder_count": folders,
+        "total_bytes": total,
+        "excluded": excluded_count,
+        "app_version": _APP_VERSION,
+        "tree": tree,
+    }
+    try:
+        out = history_dir() / f"{history_id}.json"
+        tmp = out.with_suffix(".tmp")
+        tmp.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, out)  # atomic on POSIX and Windows
+        log.info("Scan history saved: %s (%s, %.1f MB)",
+                 history_id, root_path, total / (1024 * 1024))
+        return history_id
+    except OSError as e:
+        log.warning("Could not save scan history: %s", e)
+        return None
+
+
+def list_scan_history():
+    """Metadata for every stored scan, newest first (no tree payloads)."""
+    items = []
+    try:
+        files = sorted(history_dir().glob("*.json"), reverse=True)
+    except OSError:
+        return items
+    for f in files:
+        try:
+            with f.open(encoding="utf-8") as fh:
+                data = json.load(fh)
+            data.pop("tree", None)
+            items.append(data)
+        except (OSError, ValueError) as e:
+            log.warning("Skipping corrupt history file %s: %s", f.name, e)
+    return items
+
+
+def load_scan_history(history_id):
+    """Full snapshot including the tree, or None when unknown/invalid."""
+    if not history_id or not all(c.isalnum() or c in "-_" for c in history_id):
+        return None
+    path = history_dir() / f"{history_id}.json"
+    try:
+        with path.open(encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return None
+
+
+def delete_scan_history(history_id):
+    """Remove one snapshot. Returns True when a file was deleted."""
+    if not history_id or not all(c.isalnum() or c in "-_" for c in history_id):
+        return False
+    try:
+        (history_dir() / f"{history_id}.json").unlink()
+        log.info("Scan history deleted: %s", history_id)
+        return True
+    except OSError:
+        return False
+
 # Single version source of truth (src/version.py), resolved once at import.
 try:
     from version import __version__ as _APP_VERSION
@@ -464,12 +565,24 @@ class DiskScanner:
             else:
                 self.last_result = tree
                 self.state = "done"
+                duration = time.time() - started_at
                 log.info(
                     "Scan done: %s — %d files, %d folders, %.1f MB in %.1fs "
                     "(%d entries excluded)",
                     target_path, self.scanned_files, self.scanned_folders,
-                    self.total_bytes / (1024 * 1024), time.time() - started_at,
+                    self.total_bytes / (1024 * 1024), duration,
                     self.excluded_count)
+                # Dedup: the UI intentionally fires quick-scan(auto_deep)
+                # and an explicit deep scan for the same target; only the
+                # first completion within the window becomes a history entry.
+                last = getattr(self, "_last_saved_scan", None)
+                if last and last[0] == target_path and (started_at - last[1]) < 30:
+                    log.info("Duplicate deep scan of %s within %.0fs — skipping history entry",
+                             target_path, started_at - last[1])
+                else:
+                    hid = save_scan_history(target_path, tree, duration, self.excluded_count)
+                    if hid:
+                        self._last_saved_scan = (target_path, started_at)
         except Exception as e:
             if gen == self._generation:
                 self.error_message = str(e)
@@ -679,6 +792,8 @@ class DiskAtlasRequestHandler(SimpleHTTPRequestHandler):
                 self._send_json(scanner_instance.last_result)
             else:
                 self._send_json({"error": "No scan data available"}, status=404)
+        elif path == "/api/history":
+            self._send_json(list_scan_history())
         else:
             super().do_GET()
 
@@ -753,6 +868,27 @@ class DiskAtlasRequestHandler(SimpleHTTPRequestHandler):
             export_path = self._export_standalone_html()
             log.info("Exported standalone report: %s", export_path)
             self._send_json({"status": "exported", "path": export_path})
+
+        elif path == "/api/history/load":
+            snapshot = load_scan_history(payload.get("id", ""))
+            if snapshot is None:
+                self._send_json({"error": "Unknown or invalid history id"}, status=404)
+            else:
+                # Replay into the live scanner so the UI treats it exactly
+                # like a fresh scan (deep tree, no rescan needed).
+                scanner_instance.last_result = snapshot["tree"]
+                scanner_instance.state = "done"
+                self._send_json(snapshot)
+
+        elif path == "/api/history/delete":
+            history_id = payload.get("id", "")
+            if not history_id:
+                self._send_json({"error": "Missing id parameter"}, status=400)
+            elif delete_scan_history(history_id):
+                self._send_json({"status": "deleted", "id": history_id})
+            else:
+                self._send_json({"error": "Unknown or invalid history id"}, status=404)
+
         else:
             self._send_json({"error": "Not Found"}, status=404)
 

@@ -171,6 +171,12 @@ class DiskAtlasApp {
     document.getElementById('update-banner-dismiss')?.addEventListener('click', () => {
       document.getElementById('update-banner')?.setAttribute('hidden', '');
     });
+
+    // Scan History panel
+    document.getElementById('history-btn')?.addEventListener('click', () => this.toggleHistoryPanel());
+    document.getElementById('history-close')?.addEventListener('click', () => {
+      document.getElementById('history-panel')?.setAttribute('hidden', '');
+    });
   }
 
   // --- VERSION + UPDATE CHECK ---
@@ -253,6 +259,108 @@ class DiskAtlasApp {
     if (text) text.textContent = `Disk Atlas v${latest} is available (you have v${this.appVersion}).`;
     if (link) link.href = url;
     banner.removeAttribute('hidden');
+  }
+
+  // --- SCAN HISTORY PANEL ---
+  // Every completed deep scan is persisted by the engine; the panel lists
+  // them newest-first and can reopen or delete any snapshot.
+  async toggleHistoryPanel() {
+    const panel = document.getElementById('history-panel');
+    if (!panel) return;
+    if (panel.hasAttribute('hidden')) {
+      panel.removeAttribute('hidden');
+      await this.renderHistoryList();
+    } else {
+      panel.setAttribute('hidden', '');
+    }
+  }
+
+  async renderHistoryList() {
+    const container = document.getElementById('history-list');
+    if (!container) return;
+    container.innerHTML = '<div class="history-empty">Loading…</div>';
+    try {
+      const res = await this.apiFetch('/api/history');
+      const items = res.ok ? await res.json() : [];
+      if (!items.length) {
+        container.innerHTML = '<div class="history-empty">No saved scans yet. Completed scans appear here automatically.</div>';
+        return;
+      }
+      container.innerHTML = '';
+      for (const item of items) {
+        container.appendChild(this._buildHistoryItem(item));
+      }
+    } catch (_) {
+      container.innerHTML = '<div class="history-empty">History unavailable — engine offline.</div>';
+    }
+  }
+
+  _buildHistoryItem(item) {
+    const el = document.createElement('div');
+    el.className = 'history-item';
+
+    const when = item.timestamp
+      ? new Date(item.timestamp).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+      : '—';
+    const sizeStr = this.formatBytes(item.total_bytes || 0);
+    const files = item.file_count?.toLocaleString?.() || '0';
+    const folders = item.folder_count?.toLocaleString?.() || '0';
+
+    el.innerHTML = `
+      <div class="history-item-title" title="${this.escapeHtml(item.root_path || '')}">📁 ${this.escapeHtml(item.name || 'Scan')}</div>
+      <div class="history-item-meta">
+        <span>${when}</span>
+        <span>${sizeStr}</span>
+        <span>${files} files · ${folders} folders</span>
+      </div>
+      <div class="history-item-actions">
+        <button class="history-open">Open</button>
+        <button class="history-rescan">Re-scan</button>
+        <button class="history-delete" title="Delete this saved scan">🗑</button>
+      </div>`;
+
+    el.querySelector('.history-open').addEventListener('click', () => this.openHistoryScan(item.id));
+    el.querySelector('.history-rescan').addEventListener('click', () => {
+      document.getElementById('history-panel')?.setAttribute('hidden', '');
+      this.loadFolderQuickly(item.root_path, true);
+    });
+    el.querySelector('.history-delete').addEventListener('click', () => this.deleteHistoryScan(item.id, el));
+    return el;
+  }
+
+  async openHistoryScan(id) {
+    try {
+      const res = await this.apiFetch('/api/history/load', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id })
+      });
+      if (!res.ok) {
+        this.showScanStatusPill('⚠ That saved scan could not be loaded.');
+        return;
+      }
+      const snapshot = await res.json();
+      this.setData(snapshot.tree);
+      const pathInput = document.getElementById('path-input');
+      if (pathInput) pathInput.value = snapshot.root_path || '';
+      document.getElementById('history-panel')?.setAttribute('hidden', '');
+      this.showScanStatusPill(`🕘 Restored scan of ${snapshot.root_path} (${this.formatBytes(snapshot.total_bytes)}).`);
+    } catch (_) {
+      this.showScanStatusPill('⚠ History load failed — engine offline.');
+    }
+  }
+
+  async deleteHistoryScan(id, rowEl) {
+    try {
+      const res = await this.apiFetch('/api/history/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id })
+      });
+      if (res.ok && rowEl) rowEl.remove();
+    } catch (_) {
+      // engine offline — leave the row in place
+    }
   }
 
   // --- CENTRALIZED API HELPER ---

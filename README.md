@@ -159,6 +159,18 @@ A static download page lives in `docs/` (`docs/index.html`). To publish it, enab
 
 ---
 
+## 🕘 Scan History
+
+Every completed deep scan is automatically saved to your user-data directory (per-OS app data folder, never in the repo). The 🕘 **History** button in the toolbar opens a panel listing past scans — newest first — with timestamp, total size, and file/folder counts. From there you can:
+
+- **Open** — restore the saved tree instantly without rescanning (full deep tree, all visualization modes work)
+- **Re-scan** — run a fresh scan of the same path
+- **Delete** — remove the saved snapshot
+
+History is private to your machine: snapshots are JSON files under the app's data directory, never uploaded anywhere.
+
+---
+
 ## 🌟 Visualization Modes
 1. **3D Storage City**: Folders and files rendered as interactive city blocks and skyscrapers scaled by size.
 2. **Folder Layers**: Tiered vertical hierarchy displaying nested directories with elevation and depth.
