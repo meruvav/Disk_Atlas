@@ -1131,3 +1131,21 @@ body.theme-light .items-table td {
 .btn-icon-only span {
   margin: 0 !important;
 }
+
+/* Load-more paging button (lazy tree, Phase 4.5) */
+.load-more-btn {
+  padding: 2px 10px;
+  margin-left: 4px;
+  font-size: 0.7rem;
+  border-radius: 999px;
+  cursor: pointer;
+  border: 1px solid var(--accent-cyan, #00f0ff);
+  background: transparent;
+  color: var(--accent-cyan, #00f0ff);
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.load-more-btn:hover {
+  background: var(--accent-cyan, #00f0ff);
+  color: #0a0d14;
+}

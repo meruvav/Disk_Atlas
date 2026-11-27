@@ -158,6 +158,45 @@ def delete_scan_history(history_id):
     except OSError:
         return False
 
+# --- LAZY TREE PAGING (Phase 4.5) ---
+# A finished deep scan of a large drive can hold millions of nodes; shipping
+# the whole tree to the browser in one JSON payload hangs or crashes the tab.
+# Instead the engine serves a depth-limited, breadth-capped "shallow" tree —
+# folder `size` values stay exact because they were aggregated bottom-up
+# during the scan — and pages in a folder's direct children on demand from
+# the in-memory result via /api/tree/children.
+TREE_PAGE_SIZE = 200        # default max children served per folder
+TREE_PAGE_MAX = 1000        # hard cap on a caller-requested page size
+TREE_INITIAL_DEPTH = 2      # /api/data ships children + grandchildren
+
+
+def shallow_tree_copy(node, depth, page_size=TREE_PAGE_SIZE):
+    """Copy a scan node for transport, truncating below `depth` levels and
+    past `page_size` children per folder.
+
+    Truncated folders carry children_truncated=True plus child_count so the
+    UI can page the rest in via /api/tree/children. Sizes are never altered:
+    they were computed over the full subtree at scan time.
+    """
+    out = {k: v for k, v in node.items() if k != "children"}
+    if node.get("type") != "folder":
+        return out
+    children = node.get("children") or []
+    out["child_count"] = len(children)
+    if not children:
+        out["children"] = []
+        return out
+    if depth <= 0:
+        out["children"] = []
+        out["children_truncated"] = True
+        return out
+    page = children[:page_size]
+    out["children"] = [shallow_tree_copy(c, depth - 1, page_size) for c in page]
+    if len(children) > page_size:
+        out["children_truncated"] = True
+    return out
+
+
 # Single version source of truth (src/version.py), resolved once at import.
 try:
     from version import __version__ as _APP_VERSION
@@ -443,6 +482,13 @@ class DiskScanner:
         self.excluded_count = 0
         self._extra_exclusions = frozenset()
         self._last_progress_time = 0
+        # Lazy-tree support: exact file/folder counts for the current result,
+        # an on-demand path -> node index, and a per-result summary cache.
+        self.result_counts = None
+        self._tree_index = {}
+        self._indexed_result = None
+        self._summary_cache = {}
+        self._summary_cache_for = None
         # Concurrency: _lock guards state transitions; _generation identifies
         # the current scan so a cancelled/superseded thread can't clobber
         # the state of its successor.
@@ -533,6 +579,7 @@ class DiskScanner:
             "folder_count": folder_count
         }
         self.last_result = result
+        self.result_counts = {"files": file_count, "folders": folder_count}
         return result
 
     def scan_path(self, target_path, gen=None, extra_exclusions=None):
@@ -556,7 +603,7 @@ class DiskScanner:
                  f" with {len(self._extra_exclusions)} custom exclusions"
                  if self._extra_exclusions else "")
         try:
-            tree = self._iterative_scan(target_path, gen)
+            tree, path_index = self._iterative_scan(target_path, gen)
             if gen != self._generation:
                 log.info("Scan generation %d superseded; discarding result", gen)
                 return
@@ -564,6 +611,14 @@ class DiskScanner:
                 self.state = "idle"
             else:
                 self.last_result = tree
+                # The scanner already built a complete path -> node map while
+                # walking, so lazy paging indexes this result for free.
+                self._tree_index = path_index
+                self._indexed_result = tree
+                self._summary_cache = {}
+                self._summary_cache_for = tree
+                self.result_counts = {"files": self.scanned_files,
+                                      "folders": self.scanned_folders}
                 self.state = "done"
                 duration = time.time() - started_at
                 log.info(
@@ -614,7 +669,7 @@ class DiskScanner:
 
         while stack:
             if not self._is_current(gen):
-                return root_node
+                return root_node, nodes
 
             curr = stack.pop()
             post_order_dirs.append(curr)
@@ -631,7 +686,7 @@ class DiskScanner:
                     for entry in it:
                         items_processed += 1
                         if items_processed & 255 == 0 and not self._is_current(gen):
-                            return root_node
+                            return root_node, nodes
 
                         if is_excluded_name(entry.name, self._extra_exclusions):
                             self.excluded_count += 1
@@ -681,7 +736,98 @@ class DiskScanner:
             d_node["size"] = d_size
             d_node["children"].sort(key=lambda x: (0 if x["type"] == "folder" else 1, -x["size"]))
 
-        return root_node
+        return root_node, nodes
+
+    def tree_index(self):
+        """path -> node map for the current scan result, built on demand.
+
+        Fresh deep scans arrive pre-indexed (the scanner built the map while
+        walking); replayed history snapshots and quick previews are walked
+        once here and cached until the result object changes.
+        """
+        if self.last_result is None:
+            return {}
+        if self._indexed_result is self.last_result:
+            return self._tree_index
+        # Folders only: paging and summaries address folders, and skipping
+        # file entries keeps the index small on million-file trees. This
+        # matches the map the scanner itself builds while walking.
+        idx = {}
+        stack = [self.last_result]
+        while stack:
+            n = stack.pop()
+            if n.get("type") == "folder":
+                p = n.get("path")
+                if p:
+                    idx[p] = n
+                ch = n.get("children")
+                if ch:
+                    stack.extend(ch)
+        self._tree_index = idx
+        self._indexed_result = self.last_result
+        return idx
+
+    def summarize_subtree(self, path):
+        """Exact aggregate stats for one node of the current result:
+        file/folder counts, total bytes, top-15 largest files, and the top
+        extensions by bytes. Computed over the full in-memory subtree (never
+        the live disk) so the UI's Largest/Insights tabs stay correct even
+        when the browser only holds a shallow tree. Cached per result.
+        Returns None when the path is unknown.
+        """
+        node = self.tree_index().get(path)
+        if node is None:
+            return None
+        if self._summary_cache_for is not self.last_result:
+            self._summary_cache = {}
+            self._summary_cache_for = self.last_result
+        if path in self._summary_cache:
+            return self._summary_cache[path]
+
+        import heapq
+        files = folders = total = 0
+        ext_map = {}
+        largest = []  # min-heap of (size, seq, node), bounded at 15
+        seq = 0
+        stack = [node]
+        while stack:
+            n = stack.pop()
+            if n.get("type") == "folder":
+                folders += 1
+                ch = n.get("children")
+                if ch:
+                    stack.extend(ch)
+            else:
+                files += 1
+                sz = n.get("size", 0)
+                total += sz
+                ext = n.get("ext") or "other"
+                ext_map[ext] = ext_map.get(ext, 0) + sz
+                seq += 1
+                item = (sz, seq, n)
+                if len(largest) < 15:
+                    heapq.heappush(largest, item)
+                elif sz > largest[0][0]:
+                    heapq.heapreplace(largest, item)
+
+        top = sorted(largest, reverse=True)
+        summary = {
+            "path": path,
+            "name": node.get("name"),
+            "size": node.get("size", 0),
+            "file_count": files,
+            "folder_count": folders,
+            "total_bytes": total,
+            "largest_files": [
+                {"name": n.get("name"), "path": n.get("path"),
+                 "size": s, "ext": n.get("ext") or "other"}
+                for s, _seq, n in top
+            ],
+            "extensions": sorted(ext_map.items(), key=lambda kv: kv[1],
+                                 reverse=True)[:8],
+        }
+        self._summary_cache[path] = summary
+        return summary
 
 scanner_instance = DiskScanner()
 
@@ -789,9 +935,73 @@ class DiskAtlasRequestHandler(SimpleHTTPRequestHandler):
                 self._send_json({"error": "Invalid or missing path parameter"}, status=400)
         elif self.path == "/api/data":
             if scanner_instance.last_result:
-                self._send_json(scanner_instance.last_result)
+                result = scanner_instance.last_result
+                if result.get("quick_preview"):
+                    # Quick previews are already a single shallow level.
+                    self._send_json(result)
+                else:
+                    shallow = shallow_tree_copy(result, TREE_INITIAL_DEPTH)
+                    counts = scanner_instance.result_counts
+                    if counts:
+                        shallow["file_count"] = counts["files"]
+                        shallow["folder_count"] = counts["folders"]
+                    self._send_json(shallow)
             else:
                 self._send_json({"error": "No scan data available"}, status=404)
+        elif self.path.startswith("/api/tree/children"):
+            query = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(query)
+            target = params.get("path", [""])[0]
+            try:
+                offset = max(0, int(params.get("offset", ["0"])[0]))
+            except ValueError:
+                offset = 0
+            try:
+                limit = int(params.get("limit", [str(TREE_PAGE_SIZE)])[0])
+            except ValueError:
+                limit = TREE_PAGE_SIZE
+            limit = max(1, min(TREE_PAGE_MAX, limit))
+            if not target:
+                self._send_json({"error": "Missing path parameter"}, status=400)
+            else:
+                node = scanner_instance.tree_index().get(target)
+                if node is None:
+                    self._send_json(
+                        {"error": "Path not found in the current scan result"},
+                        status=404)
+                elif node.get("type") != "folder":
+                    self._send_json({"error": "Path is not a folder"}, status=400)
+                else:
+                    children = node.get("children") or []
+                    total = len(children)
+                    page = children[offset:offset + limit]
+                    # Each folder child ships with its own first page of
+                    # children (depth 1), so after a drill the UI holds the
+                    # same node+children+grandchildren shape as /api/data.
+                    self._send_json({
+                        "path": node.get("path"),
+                        "name": node.get("name"),
+                        "size": node.get("size", 0),
+                        "child_count": total,
+                        "offset": offset,
+                        "limit": limit,
+                        "has_more": offset + len(page) < total,
+                        "children": [shallow_tree_copy(c, 1, limit) for c in page],
+                    })
+        elif self.path.startswith("/api/tree/summary"):
+            query = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(query)
+            target = params.get("path", [""])[0]
+            if not target:
+                self._send_json({"error": "Missing path parameter"}, status=400)
+            else:
+                summary = scanner_instance.summarize_subtree(target)
+                if summary is None:
+                    self._send_json(
+                        {"error": "Path not found in the current scan result"},
+                        status=404)
+                else:
+                    self._send_json(summary)
         elif path == "/api/history":
             self._send_json(list_scan_history())
         else:
@@ -875,10 +1085,21 @@ class DiskAtlasRequestHandler(SimpleHTTPRequestHandler):
                 self._send_json({"error": "Unknown or invalid history id"}, status=404)
             else:
                 # Replay into the live scanner so the UI treats it exactly
-                # like a fresh scan (deep tree, no rescan needed).
+                # like a fresh scan (deep tree, no rescan needed). The full
+                # tree stays server-side; the response carries the same
+                # shallow, lazily-paged shape as /api/data.
                 scanner_instance.last_result = snapshot["tree"]
+                scanner_instance.result_counts = {
+                    "files": snapshot.get("file_count", 0),
+                    "folders": snapshot.get("folder_count", 0),
+                }
                 scanner_instance.state = "done"
-                self._send_json(snapshot)
+                out = dict(snapshot)
+                shallow = shallow_tree_copy(snapshot["tree"], TREE_INITIAL_DEPTH)
+                shallow["file_count"] = snapshot.get("file_count", 0)
+                shallow["folder_count"] = snapshot.get("folder_count", 0)
+                out["tree"] = shallow
+                self._send_json(out)
 
         elif path == "/api/history/delete":
             history_id = payload.get("id", "")

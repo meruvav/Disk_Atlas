@@ -171,6 +171,20 @@ History is private to your machine: snapshots are JSON files under the app's dat
 
 ---
 
+## ⚡ Large-Drive Performance (Lazy Tree Loading)
+
+Deep scans of huge drives produce trees far too large to send to the UI in one payload — a 1M-file scan would be well over 100 MB of JSON. Disk Atlas therefore loads the tree **lazily**:
+
+- After a scan, the UI receives only the **first two levels** of the tree, with each folder capped at its **200 largest direct children**. Folder sizes are still exact at every level — they are aggregated during the scan itself.
+- Drilling into a not-yet-loaded folder **pages its children in** from the engine's in-memory result in milliseconds (`/api/tree/children`), including the next level's first pages.
+- Folders with more than a page of children show the exact total (`child_count`) and a **Load more** button in the Contents and List views.
+- The **Largest files** and **Insights** tabs stay exact regardless of what the browser has loaded: the engine computes them over the full in-memory scan (`/api/tree/summary`), cached per scan.
+- Exported HTML reports keep embedding the complete tree so they work fully offline.
+
+In practice: a 51,000-file scan's initial payload drops ~28× (5.7 MB → 0.2 MB), and payload size stays flat no matter how big the drive gets.
+
+---
+
 ## 🌟 Visualization Modes
 1. **3D Storage City**: Folders and files rendered as interactive city blocks and skyscrapers scaled by size.
 2. **Folder Layers**: Tiered vertical hierarchy displaying nested directories with elevation and depth.

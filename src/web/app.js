@@ -554,6 +554,11 @@ class DiskAtlasApp {
       if (!node) return;
       if (node.path) this.nodePathMap.set(node.path, node);
       node._parent = parent;
+      // A folder arriving with children already holds page 1 of them
+      // (server pages are deterministic), so drilling skips a refetch.
+      if (node.type === 'folder' && node.children && node.children.length > 0) {
+        node._childrenLoaded = true;
+      }
       if (node.children) {
         for (let i = 0; i < node.children.length; i++) {
           indexTree(node.children[i], node);
@@ -573,11 +578,29 @@ class DiskAtlasApp {
     }
   }
 
-  async drillDown(node) {
+  // --- LAZY TREE LOADING (Phase 4.5) ---
+  // Deep-scan trees arrive depth-limited and breadth-capped; folders beyond
+  // that horizon carry children_truncated + child_count with exact sizes.
+  // Children are paged in from the engine's in-memory result on demand.
+  async ensureChildrenLoaded(node) {
     if (!node || node.type !== 'folder') return;
 
-    // If folder children are not loaded yet (shallow preview), fetch instantly in < 15ms
-    if (!node.children || node.children.length === 0) {
+    // Deep-scan tree: page this folder's children in from the scan result.
+    if (node.children_truncated && !node._childrenLoaded) {
+      try {
+        const res = await this.apiFetch(`/api/tree/children?path=${encodeURIComponent(node.path)}`);
+        if (res.ok) {
+          const data = await res.json();
+          this._adoptChildren(node, data.children || [], data);
+        }
+      } catch (e) {}
+      return;
+    }
+
+    // Quick-preview tree (deep scan still running): instant live re-scan,
+    // the original < 15ms behavior for the shallow preview level.
+    if ((!node.children || node.children.length === 0) &&
+        this.currentData && this.currentData.quick_preview) {
       try {
         const res = await this.apiFetch(`/api/quick-scan?path=${encodeURIComponent(node.path)}`);
         if (res.ok) {
@@ -591,6 +614,66 @@ class DiskAtlasApp {
         }
       } catch (e) {}
     }
+  }
+
+  _adoptChildren(node, children, pageInfo = {}) {
+    node.children = children;
+    node.child_count = pageInfo.child_count ?? children.length;
+    node._childrenLoaded = true;
+    node.children_truncated = pageInfo.has_more === true;
+    // Newly loaded descendants invalidate memoized Largest/Insights caches
+    // on this node and every ancestor up to the root.
+    let p = node;
+    while (p) {
+      delete p._cachedLargest;
+      delete p._cachedExt;
+      p = p._parent;
+    }
+    children.forEach(c => {
+      if (c.path) this.nodePathMap.set(c.path, c);
+      c._parent = node;
+      // Folder children arrive holding their own first page (depth-1 copies)
+      if (c.type === 'folder' && c.children && c.children.length > 0) {
+        c._childrenLoaded = true;
+      }
+    });
+  }
+
+  // Fetch the next page of children for a folder that has more on the
+  // engine than the UI has loaded so far ("Load more" in the tables).
+  async loadMoreChildren(node) {
+    if (!node || !node.children_truncated) return;
+    const offset = (node.children || []).length;
+    try {
+      const res = await this.apiFetch(
+        `/api/tree/children?path=${encodeURIComponent(node.path)}&offset=${offset}`);
+      if (res.ok) {
+        const data = await res.json();
+        const merged = (node.children || []).concat(data.children || []);
+        this._adoptChildren(node, merged, data);
+        this.setInspectorTab(this.activeTab);
+        if (this.viewMode === 'list') this.renderListView();
+      }
+    } catch (e) {}
+  }
+
+  // True when any descendant of `node` is known to exist on the engine but
+  // not loaded in the browser yet (client-side aggregates would be partial).
+  treeHasTruncated(root) {
+    const stack = [root];
+    while (stack.length) {
+      const n = stack.pop();
+      if (n.children_truncated) return true;
+      const ch = n.children;
+      if (ch) for (let i = 0; i < ch.length; i++) stack.push(ch[i]);
+    }
+    return false;
+  }
+
+  async drillDown(node) {
+    if (!node || node.type !== 'folder') return;
+
+    await this.ensureChildrenLoaded(node);
 
     this.currentNode = node;
     this.selectedNode = node;
@@ -689,16 +772,22 @@ class DiskAtlasApp {
         else subFolders++;
       }
     }
+    const isFolder = node.type === 'folder';
+    // With lazy loading the browser may hold only the first page of a big
+    // folder; child_count is the exact on-disk direct-child total.
+    const folderSummary = (isFolder && node.children_truncated && node.child_count != null)
+      ? `${node.child_count.toLocaleString()} items (${(subFiles + subFolders).toLocaleString()} loaded)`
+      : `${subFiles} files, ${subFolders} folders`;
 
-    document.getElementById('summary-items-count').innerText = node.type === 'folder' 
-      ? `${subFiles} files, ${subFolders} folders` 
+    document.getElementById('summary-items-count').innerText = isFolder
+      ? folderSummary
       : `File (${node.ext || 'other'})`;
 
     // Footer details
-    document.getElementById('detail-type').innerText = node.type === 'folder' ? 'File folder' : `${(node.ext || '').toUpperCase()} File`;
+    document.getElementById('detail-type').innerText = isFolder ? 'File folder' : `${(node.ext || '').toUpperCase()} File`;
     document.getElementById('detail-path').innerText = node.path || node.name;
     document.getElementById('detail-bytes').innerText = `${this.formatBytes(node.size)} (${(node.size || 0).toLocaleString()} bytes)`;
-    document.getElementById('detail-contains').innerText = node.type === 'folder' ? `${subFiles} files, ${subFolders} folders` : '—';
+    document.getElementById('detail-contains').innerText = isFolder ? folderSummary : '—';
   }
 
   // --- TAB: CONTENTS TABLE (Image 1 & Image 2) ---
@@ -734,8 +823,18 @@ class DiskAtlasApp {
     });
 
     html += `</tbody></table>`;
-    if ((node.children || []).length > 150) {
-      html += `<div style="text-align:center; padding:8px; font-size:0.72rem; color:var(--text-dim);">Showing top 150 of ${node.children.length} items</div>`;
+    const loadedCount = (node.children || []).length;
+    const totalCount = node.child_count ?? loadedCount;
+    if (loadedCount > 150) {
+      html += `<div style="text-align:center; padding:8px; font-size:0.72rem; color:var(--text-dim);">Showing top 150 of ${loadedCount.toLocaleString()} loaded items</div>`;
+    }
+    if (node.children_truncated) {
+      const remaining = totalCount - loadedCount;
+      html += `
+        <div style="text-align:center; padding:8px; font-size:0.72rem; color:var(--text-dim);">
+          ${remaining.toLocaleString()} more item${remaining === 1 ? '' : 's'} on disk —
+          <button class="load-more-btn" onclick="app.loadMoreChildren(app.currentNode)">Load more</button>
+        </div>`;
     }
     pane.innerHTML = html;
   }
@@ -760,6 +859,7 @@ class DiskAtlasApp {
             <span>${child.type === 'folder' ? '📁' : '📄'}</span>
             <span>${this.escapeHtml(child.name)}</span>
           </div>
+          ${child.children_truncated ? `<span class="node-badge" title="Not loaded yet — double-click to open" style="background:rgba(255,255,255,0.12); color:var(--text-dim);">+${(child.child_count ?? 0).toLocaleString()}</span>` : ''}
           <span class="node-badge" style="background:${this.getBadgeColor(child.size)}; color:#fff;">
             ${this.formatBytes(child.size)}
           </span>
@@ -784,27 +884,52 @@ class DiskAtlasApp {
     buildTreeDOM(this.currentNode, pane);
   }
 
-  // --- TAB: LARGEST FILES (Memoized O(1) Access) ---
-  renderLargestFiles() {
+  // Exact whole-subtree aggregates from the engine (computed over the full
+  // in-memory scan, even parts the browser hasn't loaded). Returns null in
+  // standalone/exported mode or when the engine is unreachable.
+  async fetchTreeSummary(node) {
+    if (!window.__DA_TOKEN__ || !node || !node.path) return null;
+    try {
+      const res = await this.apiFetch(`/api/tree/summary?path=${encodeURIComponent(node.path)}`);
+      if (res.ok) return await res.json();
+    } catch (_) {}
+    return null;
+  }
+
+  // --- TAB: LARGEST FILES ---
+  // Engine summary keeps this tab exact on lazily-loaded trees; the
+  // client-side harvest remains as the standalone-report fallback.
+  async renderLargestFiles() {
     const pane = document.getElementById('tab-largest');
     if (!pane) return;
+    const node = this.currentNode;
+    if (!node) return;
 
-    if (!this.currentNode._cachedLargest) {
-      const files = [];
-      const harvestFiles = (n) => {
-        if (n.type === 'file') files.push(n);
-        if (n.children && n.children.length > 0) {
-          for (let i = 0; i < n.children.length; i++) {
-            harvestFiles(n.children[i]);
+    const summary = await this.fetchTreeSummary(node);
+    if (this.currentNode !== node) return; // user moved on while fetching
+
+    let topFiles;
+    let partial = false;
+    if (summary) {
+      topFiles = summary.largest_files || [];
+    } else {
+      if (!node._cachedLargest) {
+        const files = [];
+        const harvestFiles = (n) => {
+          if (n.type === 'file') files.push(n);
+          if (n.children && n.children.length > 0) {
+            for (let i = 0; i < n.children.length; i++) {
+              harvestFiles(n.children[i]);
+            }
           }
-        }
-      };
-      harvestFiles(this.currentNode);
-      files.sort((a, b) => (b.size || 0) - (a.size || 0));
-      this.currentNode._cachedLargest = files.slice(0, 15);
+        };
+        harvestFiles(node);
+        files.sort((a, b) => (b.size || 0) - (a.size || 0));
+        node._cachedLargest = files.slice(0, 15);
+      }
+      topFiles = node._cachedLargest;
+      partial = this.treeHasTruncated(node);
     }
-
-    const topFiles = this.currentNode._cachedLargest;
 
     let html = `<div style="display:flex; flex-direction:column; gap:6px;">`;
     topFiles.forEach(f => {
@@ -818,34 +943,53 @@ class DiskAtlasApp {
         </div>
       `;
     });
+    if (topFiles.length === 0) {
+      html += `<div style="color:var(--text-dim); font-size:0.8rem; padding:8px 4px;">No files in this branch.</div>`;
+    }
     html += `</div>`;
+    if (partial) {
+      html += `<div style="text-align:center; padding:8px; font-size:0.72rem; color:var(--text-dim);">Based on items loaded so far — drill into folders to refine.</div>`;
+    }
     pane.innerHTML = html;
   }
 
-  // --- TAB: INSIGHTS & FILE TYPES (Memoized O(1) Access) ---
-  renderInsights() {
+  // --- TAB: INSIGHTS & FILE TYPES ---
+  async renderInsights() {
     const pane = document.getElementById('tab-insights');
     if (!pane) return;
+    const node = this.currentNode;
+    if (!node) return;
 
-    if (!this.currentNode._cachedExt) {
-      const extMap = {};
-      const harvestExt = (n) => {
-        if (n.type === 'file') {
-          const ext = n.ext || 'other';
-          extMap[ext] = (extMap[ext] || 0) + (n.size || 0);
-        }
-        if (n.children && n.children.length > 0) {
-          for (let i = 0; i < n.children.length; i++) {
-            harvestExt(n.children[i]);
+    const summary = await this.fetchTreeSummary(node);
+    if (this.currentNode !== node) return; // user moved on while fetching
+
+    let sorted;
+    let total;
+    let partial = false;
+    if (summary) {
+      sorted = summary.extensions || [];
+      total = summary.total_bytes || 1;
+    } else {
+      if (!node._cachedExt) {
+        const extMap = {};
+        const harvestExt = (n) => {
+          if (n.type === 'file') {
+            const ext = n.ext || 'other';
+            extMap[ext] = (extMap[ext] || 0) + (n.size || 0);
           }
-        }
-      };
-      harvestExt(this.currentNode);
-      this.currentNode._cachedExt = Object.entries(extMap).sort((a, b) => b[1] - a[1]);
+          if (n.children && n.children.length > 0) {
+            for (let i = 0; i < n.children.length; i++) {
+              harvestExt(n.children[i]);
+            }
+          }
+        };
+        harvestExt(node);
+        node._cachedExt = Object.entries(extMap).sort((a, b) => b[1] - a[1]);
+      }
+      sorted = node._cachedExt;
+      total = node.size || 1;
+      partial = this.treeHasTruncated(node);
     }
-
-    const sorted = this.currentNode._cachedExt;
-    const total = this.currentNode.size || 1;
 
     let html = `<div style="font-size:0.8rem; margin-bottom:12px; font-weight:600; color:var(--text-muted);">EXTENSIONS BREAKDOWN</div>`;
     sorted.slice(0, 7).forEach(([ext, sz]) => {
@@ -862,6 +1006,12 @@ class DiskAtlasApp {
         </div>
       `;
     });
+    if (sorted.length === 0) {
+      html += `<div style="color:var(--text-dim); font-size:0.8rem; padding:8px 4px;">No files in this branch.</div>`;
+    }
+    if (partial) {
+      html += `<div style="text-align:center; padding:8px; font-size:0.72rem; color:var(--text-dim);">Based on items loaded so far — drill into folders to refine.</div>`;
+    }
 
     pane.innerHTML = html;
   }
@@ -871,11 +1021,14 @@ class DiskAtlasApp {
     const container = document.getElementById('list-view-container');
     if (!container) return;
 
-    const children = (this.currentNode.children || []).slice(0, 200);
+    const node = this.currentNode;
+    const children = (node.children || []).slice(0, 200);
+    const loadedCount = (node.children || []).length;
+    const totalCount = node.child_count ?? loadedCount;
     let html = `
       <div style="margin-bottom:14px; display:flex; justify-content:space-between; align-items:center;">
-        <h3 style="font-size:1.1rem;">Contents of ${this.escapeHtml(this.currentNode.name)}</h3>
-        <span style="color:var(--text-muted); font-size:0.8rem;">${(this.currentNode.children || []).length} items</span>
+        <h3 style="font-size:1.1rem;">Contents of ${this.escapeHtml(node.name)}</h3>
+        <span style="color:var(--text-muted); font-size:0.8rem;">${loadedCount.toLocaleString()}${node.children_truncated ? ` of ${totalCount.toLocaleString()}` : ''} items</span>
       </div>
       <table class="items-table" style="background:var(--bg-card); border-radius:8px; overflow:hidden;">
         <thead>
@@ -904,6 +1057,17 @@ class DiskAtlasApp {
     });
 
     html += `</tbody></table>`;
+    if (loadedCount > 200) {
+      html += `<div style="text-align:center; padding:8px; font-size:0.72rem; color:var(--text-dim);">Showing first 200 of ${loadedCount.toLocaleString()} loaded items</div>`;
+    }
+    if (node.children_truncated) {
+      const remaining = totalCount - loadedCount;
+      html += `
+        <div style="text-align:center; padding:8px; font-size:0.72rem; color:var(--text-dim);">
+          ${remaining.toLocaleString()} more item${remaining === 1 ? '' : 's'} on disk —
+          <button class="load-more-btn" onclick="app.loadMoreChildren(app.currentNode)">Load more</button>
+        </div>`;
+    }
     container.innerHTML = html;
   }
 
