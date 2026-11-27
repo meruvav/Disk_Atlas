@@ -166,7 +166,9 @@ def _mount_label(path):
     """Human-friendly name for a mount point."""
     if path == "/":
         return "System volume"
-    name = os.path.basename(path.rstrip(os.sep))
+    # Strip both separator kinds: mount paths always come from /proc
+    # or fstab, which use '/', regardless of the host platform.
+    name = os.path.basename(path.rstrip("/\\"))
     return name or path
 
 

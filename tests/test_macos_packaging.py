@@ -7,11 +7,17 @@ entitlements plist and the build script's integrity.
 
 import plistlib
 import subprocess
+import sys
 from pathlib import Path
+
+import pytest
 
 PACKAGING_DIR = Path(__file__).resolve().parent.parent / "packaging"
 ENTITLEMENTS = PACKAGING_DIR / "macos_entitlements.plist"
 BUILD_SCRIPT = PACKAGING_DIR / "build_macos.sh"
+
+# bash availability and POSIX exec bits are POSIX-only guarantees
+POSIX_ONLY = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only check")
 
 
 # ------------------------------------------------------------ entitlements ---
@@ -33,6 +39,7 @@ def test_entitlements_required_for_pyinstaller():
 
 # ------------------------------------------------------------- build script ---
 
+@POSIX_ONLY
 def test_build_script_is_valid_bash():
     result = subprocess.run(
         ["bash", "-n", str(BUILD_SCRIPT)],
@@ -41,6 +48,7 @@ def test_build_script_is_valid_bash():
     assert result.returncode == 0, f"bash syntax error: {result.stderr}"
 
 
+@POSIX_ONLY
 def test_build_script_is_executable():
     assert BUILD_SCRIPT.stat().st_mode & 0o111, "build_macos.sh must be executable"
 
